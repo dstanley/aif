@@ -6,15 +6,51 @@
 ## Goal
 
 Let AI Factory run training and fine-tuning jobs alongside the inference
-workloads it deploys today, and show who owns GPU capacity and what they are
-using. Users work with three concepts: a **project** owns capacity, a
-**profile** is a reusable compute policy, and a **workload** is what runs.
-Queues, quotas, DRA claims and the GPU scheduler stay behind those three; AI
-Factory has no Scheduler section.
+workloads it deploys today, while making GPU ownership and consumption visible.
 
-This document proposes the navigation, the pages, the decisions needed before
-the code, and a sequence of small pull requests. Each pull request is useful on
-its own.
+Users work with three primary concepts: a **project** owns a capacity
+entitlement, a **profile** defines reusable compute policy, and a
+**deployment** is an instance of something they run. Queues, quotas, DRA
+claims and scheduler-specific resources remain implementation details behind
+those concepts; AI Factory has no separate Scheduler section.
+
+This document proposes the conceptual model, the navigation, the pages, the
+decisions needed before the code, and a sequence of small pull requests. Each
+pull request is useful on its own.
+
+## Conceptual model
+
+- **Project**: a tenancy and capacity boundary. It defines who may deploy and
+  their GPU capacity entitlement: a guarantee, a limit, or both, not specific
+  physical GPUs.
+- **Compute profile**: reusable policy describing how a class of workload may
+  run: compute, GPU allocation, storage, limits, defaults and the overrides a
+  user may make. Profiles are cluster-level and shared across projects; a
+  project uses a profile when it creates a deployment. Restricting a profile to
+  some projects is not supported yet.
+- **Deployment**: an instance created from the Catalog. Training deployments
+  are finite and backed by AIJobs; inference endpoints and applications are
+  long-running and backed by AIWorkloads.
+- **Catalog**: the applications, blueprints and profiles available to deploy.
+
+```text
+Compute profile ─────┐
+                     ├──▶ Deployment
+Project ─────────────┘
+
+                 Deployment
+                /          \
+         finite              long-running
+           │                      │
+         AIJob                AIWorkload
+           │                      │
+     Job / PyTorchJob      Helm release(s), through Fleet
+           │                      │
+         Pods                   Pods
+```
+
+Scheduler queues, quotas, DRA claims, Helm releases, Jobs and PyTorchJobs are
+implementation details, shown only where they help diagnose a problem.
 
 ## Today
 
@@ -29,18 +65,20 @@ its own.
 ## Navigation
 
 ```text
-Overview      workloads first, then GPU capacity and projects
+Overview      deployments first, then GPU capacity and projects
 Catalog       what users deploy: apps, blueprints, training and inference profiles
 Deployments   what is running: training runs, inference endpoints, applications
 Settings      General, Projects & Quotas, Blueprints, Compute Profiles
 About
 ```
 
-The split is by who does what. A user browses the **Catalog** and deploys; what
-they deployed is under **Deployments**; a platform engineer sets up projects,
-quotas, blueprints and profiles under **Settings**. Apps, Blueprints and
-Workloads stop being top-level entries: Apps and Blueprints are Catalog tabs,
-Workloads is renamed Deployments, and the old routes still open their pages.
+The information architecture follows the user's workflow: **Catalog** answers
+"what can I deploy?", **Deployments** answers "what have I deployed?", and
+**Settings** answers "how is the platform configured?". A user browses the
+Catalog and deploys; a platform engineer sets up projects, quotas, blueprints
+and profiles under Settings. Apps, Blueprints and Workloads stop being
+top-level entries: Apps and Blueprints are Catalog tabs, Workloads is renamed
+Deployments, and the old routes still open their pages.
 
 ## Pages
 
@@ -49,9 +87,9 @@ Workloads is renamed Deployments, and the old routes still open their pages.
 What is running comes first, capacity beside it:
 
 ```text
-Workloads 7      Running 5       With issues 0      Projects 3     [Deploy ▾]
+Deployments 7    Running 5       With issues 0      Projects 3     [Deploy ▾]
 
-Recent workloads                         GPU capacity
+Recent deployments                       GPU capacity
 ┌──────────────────────────────────┐     ┌─────────────────────────────┐
 │ ● chat-endpoint   Inference      │     │ 4 GPUs · 2.5 allocated      │
 │   team-a · Running               │     │ ███████████████░░░░░  62%   │
@@ -77,13 +115,18 @@ Tabs **All**, **Applications**, **Training** and **Inference**. The cards are:
   the vendor and a partner logo;
 - **Apps** from the application catalog, with their icons.
 
-A blueprint that an inference profile deploys is listed through that profile.
-The blueprint's own install is still in the profile's menu, and a setting
-shows wrapped blueprints too. Below the deployable cards, a collapsed
-**Validate your environment** section holds the test and benchmark profiles
-(see *Test and benchmark profiles*).
+When a profile provides the preferred deployment experience for a blueprint,
+the Catalog presents the profile as the primary entry. The profile's menu keeps
+an option to install the underlying blueprint directly, and a setting shows
+such wrapped blueprints as separate entries. Below the deployable cards, a
+collapsed **Validate your environment** section holds the test and benchmark
+profiles (see *Test and benchmark profiles*).
 
 ### Deployments
+
+A deployment is the UI's abstraction over finite and long-running execution:
+training runs are backed by AIJobs, inference endpoints and applications by
+AIWorkloads.
 
 - Tabs **Training**, **Inference** and **Applications** under one toolbar,
   filtered by `category` (on Blueprint, AIWorkload and AIJob).
@@ -96,10 +139,10 @@ shows wrapped blueprints too. Below the deployable cards, a collapsed
   or pass with a warning), its metrics and the environment it ran in.
 - **New deployment** opens the Catalog.
 
-### Submit a training job
+### Deploy training
 
-Deploying a training profile opens the submit form, which creates an AIJob. Its
-first fields set the context:
+Selecting a training profile in the Catalog opens a deployment form. Submitting
+the form creates an AIJob. Its first fields set the context:
 
 ```text
 Project   [ team-a ▾ ]
@@ -111,13 +154,25 @@ Workload  image, arguments, GPUs, data and output volumes
 The code is a section of its own and must be chosen: a job without code would
 run only the image's default command.
 
-The profile supplies the chart, GPU request, limits and defaults, and says
-which fields a user may change. Pre-flight checks run before submit, as advice
-(the queue exists, the volumes exist, the image reference is valid, the
-request fits the project's quota, the local disk fits a node, code imports what
-the image provides). A check that only reflects the cluster's free capacity at
-that moment does not block: under a queue the job waits. A request no node can
-ever meet does.
+The profile supplies the chart, GPU request, limits and defaults. Two kinds of
+check run before submission:
+
+- **Profile constraints are enforced.** Fields the profile does not expose
+  cannot be changed, and values outside its bounds are rejected.
+- **Cluster pre-flight checks advise** on the current environment: the queue
+  exists, the volumes exist, the image reference is valid, the request fits the
+  project's quota, local storage fits a node, and the code imports what the
+  image provides. A transient capacity shortage does not block submission when
+  the scheduler can queue the deployment. An impossible request, such as a GPU
+  or local-storage requirement no eligible node can meet, does.
+
+```text
+Profile policy violation      → block
+Temporary capacity shortage   → warn, then queue
+Impossible placement          → block
+```
+
+The UI and the SDK apply the same contract.
 
 ### Profiles
 
@@ -142,21 +197,35 @@ YAML** in each tile's menu. Each profile is marked Ready or Beta.
 Under Settings. A project is a Rancher project. The page shows, for each one:
 
 - its namespaces and members;
-- its GPU entitlement (guaranteed, or a limit with borrowing) and current use,
-  in GPUs and GPU memory;
-- running and queued workloads;
-- **Edit quota**, which writes the scheduler's quota for the project.
+- its GPU capacity entitlement (guaranteed, or a limit with borrowing) and
+  current use, in GPUs and GPU memory;
+- running and queued deployments;
+- **Edit**, which writes the project's quota.
 
-The page translates a project into whatever the cluster's scheduler uses: a
-ResourceQuota per namespace with no queueing scheduler, a Kueue LocalQueue and
-ClusterQueue, or a KAI queue. A **Configure GPU scheduling** panel says which
-one is in use and what is missing. Queues that belong to no project are kept
-under **Advanced scheduling**, and only when the scheduler has them.
+The page maps the project's entitlement onto the cluster's resource-control
+mechanism: a Kubernetes ResourceQuota per namespace when no queueing scheduler
+is configured, a Kueue LocalQueue and ClusterQueue, or a KAI queue. A
+**Configure GPU scheduling** panel says which one is in use and what is
+missing. Queues that belong to no project are kept under **Advanced
+scheduling**, and only when the scheduler has them.
 
 ### Test and benchmark profiles
 
-Profiles whose purpose is test or benchmark check the environment layer by
-layer, so a failure points at one layer:
+Test and benchmark profiles form a progressive diagnostic ladder. Each stage
+adds a layer of the AI stack, so a lower-level test that passes and a
+higher-level test that fails narrow down where the fault is:
+
+```text
+GPU / CUDA
+    ↓
+PyTorch
+    ↓
+Distributed runtime / NCCL
+    ↓
+Inter-node fabric
+    ↓
+Training + storage
+```
 
 | Profile | Checks |
 |---|---|
@@ -165,22 +234,23 @@ layer, so a failure points at one layer:
 | PyTorch Distributed Test | torchrun rendezvous, NCCL, all-reduce, DDP |
 | NCCL Fabric Benchmark | all-reduce bus bandwidth between nodes |
 | Training + Storage Test | dataset → GPU → checkpoint and back, with throughput |
-| GPU Diagnostics Bundle | what NVIDIA support asks for first, as a kept .tar.gz, with ECC, throttling, PCIe width and persistence-mode checks |
+| GPU Diagnostics Bundle | collects the system and GPU diagnostics commonly required for NVIDIA support into a kept `.tar.gz`, and evaluates ECC errors, pending memory repair, throttling, temperature, PCIe link width (against the upstream port, not only the GPU's maximum) and persistence mode |
 | GPU Health Check | NVIDIA DCGM diagnostics |
 
 Each test's script ends with one `AIF_RESULT` JSON line (checks, metrics,
 environment), which the run's detail and the SDK read. Smoke, PyTorch GPU and
 the bundle also come on a GPU-memory share, so they run beside other
-workloads.
+deployments.
 
 ## Python SDK and CLI
 
-A client library (`rancher_ai`) and `rancher-ai` command line for notebooks and
-scripts: list profiles, submit and follow jobs, read logs and results, deploy
-and chat with inference endpoints, and list, read and delete kept checkpoint
-volumes. It creates AIJobs through the Kubernetes API with the caller's own
-credentials (kubeconfig, a Rancher token, or a pod's service account), so the
-same RBAC applies as in the UI.
+A Python client (`rancher_ai`) and `rancher-ai` CLI expose the same profile,
+training, inference, result and checkpoint workflows for notebooks and
+scripts. They support kubeconfig, Rancher API token and in-cluster
+ServiceAccount authentication, and call the API with the caller's identity, so
+the caller's RBAC decides what they may read and create. When a run is
+submitted as an AIJob, the operator then installs its chart with the
+operator's own service account, limited to the charts its allow-list permits.
 
 ## Decisions for review
 
@@ -189,14 +259,21 @@ same RBAC applies as in the UI.
    checkpoint and scratch volumes) needs a home: the SUSE AI catalog, or
    `charts/` in this repository. Until then the UI has no default address
    and asks for one when the chart's ClusterRepo is missing.
+   *Proposed:* the SUSE AI catalog, so the chart is versioned and released
+   with the other SUSE AI charts.
 2. **How profiles are stored.** Either a custom resource (`AIProfile`,
    validated by the CRD and served by the operator API like Blueprints), or
-   labelled ConfigMaps in one namespace. A custom resource is proposed.
-3. **Which GPU schedulers are supported.** ResourceQuota (no queueing) and
-   Kueue first. KAI adds GPU-memory shares with queueing; whether it is
+   labelled ConfigMaps in one namespace.
+   *Proposed:* a custom resource, so profiles are validated on write and
+   readable through the operator API.
+3. **Which GPU scheduling is supported.** ResourceQuota (no queueing), Kueue,
+   and KAI, which adds GPU-memory shares with queueing.
+   *Proposed:* all three behind the same project model; whether KAI is
    supported is a product decision.
 4. **Where the SDK lives.** `sdk/python` in this repository with its own CI
    workflow, or a separate repository.
+   *Proposed:* `sdk/python` in this repository, so the SDK changes in the same
+   pull request as the profile rules and APIs it mirrors.
 
 ## Pull requests
 
@@ -204,8 +281,8 @@ same RBAC applies as in the UI.
 |---|---|---|
 | 1 | AIJob API and controller | none |
 | 2 | AIJob list, cancel and delete in the operator API | 1 |
-| 3 | Training pages: profiles, submit with pre-flight checks, Projects & Quotas, Training tab and run detail | 2, decisions 1–3 |
-| 4 | Navigation: Catalog, Deployments, a workload-first Overview, Settings tabs | 3 |
+| 3 | Training pages: profiles, deploy with pre-flight checks, Projects & Quotas, Training tab and run detail | 2, decisions 1–3 |
+| 4 | Navigation: Catalog, Deployments, a deployment-first Overview, Settings tabs | 3 |
 | 5 | Test and benchmark profiles, and results in the run detail | 3 |
 | 6 | Python SDK and CLI | 1, decision 4 |
 
