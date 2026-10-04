@@ -254,13 +254,16 @@ operator's own service account, limited to the charts its allow-list permits.
 
 ## Decisions for review
 
-1. **The training chart.** An AIJob installs a chart from a ClusterRepo. A
+1. **The training chart.** An AIJob installs a chart from a ClusterRepo. The
    general training chart (single node, multi-node with torchrun, GPU shares,
-   checkpoint and scratch volumes) needs a home: the SUSE AI catalog, or
-   `charts/` in this repository. Until then the UI has no default address
-   and asks for one when the chart's ClusterRepo is missing.
-   *Proposed:* the SUSE AI catalog, so the chart is versioned and released
-   with the other SUSE AI charts.
+   checkpoint and scratch volumes) implements a contract with the AIJob
+   controller, the profile rules in the UI and SDK, and the test profiles, so
+   a change to one usually needs the others.
+   *Proposed:* its source in this repository (`charts/gpu-train-job`),
+   released with the operator at the same version to the same registry, and a
+   `gpu-train-charts` ClusterRepo created by the operator chart. The operator's
+   chart allow-list, the UI and the SDK then default to a chart that exists,
+   and a site with a mirror sets its own ClusterRepo instead.
 2. **How profiles are stored.** Either a custom resource (`AIProfile`,
    validated by the CRD and served by the operator API like Blueprints), or
    labelled ConfigMaps in one namespace.
@@ -281,10 +284,11 @@ operator's own service account, limited to the charts its allow-list permits.
 |---|---|---|
 | 1 | AIJob API and controller | none |
 | 2 | AIJob list, cancel and delete in the operator API | 1 |
-| 3 | Training pages: profiles, deploy with pre-flight checks, Projects & Quotas, Training tab and run detail | 2, decisions 1–3 |
-| 4 | Navigation: Catalog, Deployments, a deployment-first Overview, Settings tabs | 3 |
-| 5 | Test and benchmark profiles, and results in the run detail | 3 |
-| 6 | Python SDK and CLI | 1, decision 4 |
+| 3 | The training chart, released with the operator, and its ClusterRepo | 1, decision 1 |
+| 4 | Training pages: profiles, deploy with pre-flight checks, Projects & Quotas, Training tab and run detail | 2, 3, decisions 2–3 |
+| 5 | Navigation: Catalog, Deployments, a deployment-first Overview, Settings tabs | 4 |
+| 6 | Test and benchmark profiles, and results in the run detail | 3, 4 |
+| 7 | Python SDK and CLI | 1, decision 4 |
 
 Sample profiles, blueprints and roles go in `examples/training` with the pull
 request that first uses them. Each pull request adds its strings to
