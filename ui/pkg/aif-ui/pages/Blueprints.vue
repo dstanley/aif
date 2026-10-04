@@ -2,7 +2,7 @@
   <main class="main-layout">
     <div class="outlet">
       <header class="fixed-header">
-        <h1>Blueprints</h1>
+        <h1 v-if="!embedded">Blueprints</h1>
         <div
           class="actions-container"
           role="toolbar"
@@ -154,6 +154,15 @@
 
             <div class="tile-footer">
               <button
+                v-if="managing"
+                class="btn role-primary btn-sm"
+                type="button"
+                @click.stop="navigateEdit(family, versions)"
+              >
+                Edit
+              </button>
+              <button
+                v-else
                 class="btn role-primary btn-sm"
                 type="button"
                 @click.stop="navigateInstall(family, versions)"
@@ -357,8 +366,10 @@ interface BlueprintFamilyCard {
 
 export default defineComponent({
   name: 'SuseAIBlueprints',
+  // Set when the page is a tab of Settings, which carries the title.
+  props: { embedded: { type: Boolean, default: false } },
   components: { Banner, Checkbox, ActionMenuShell, AppModal, OperatorErrorBanner, BlueprintDetailPanel, BlueprintSourceBadge, BlueprintPartnerLogo },
-  setup() {
+  setup(props) {
     const vm        = getCurrentInstance()!.proxy as any;
     const $router   = vm.$router;
     const $route    = vm.$route;
@@ -379,6 +390,9 @@ export default defineComponent({
 
     // Global Administrator check — true only when the current user has globalRoleName === 'admin'.
     const isAdmin = ref(false);
+    // In Settings (embedded) blueprints are managed, not installed: Edit is the tile's action there
+    // and installing is the Catalog's.
+    const managing = computed(() => props.embedded && isAdmin.value);
 
     // ── Helpers ────────────────────────────────────────────────────────────────
     function isDeprecated(bp: Blueprint): boolean {
@@ -749,7 +763,7 @@ export default defineComponent({
       ];
       if (isAdmin.value) {
         actions.push(
-          { action: 'edit',      label: 'Edit',      enabled: true },
+          ...(managing.value ? [] : [{ action: 'edit', label: 'Edit', enabled: true }]),
           { action: 'deprecate', label: isSelectedDeprecated(family, versions) ? 'Undeprecate' : 'Deprecate', enabled: true },
         );
         // Bundled and Fleet-managed blueprints are re-created on the next sync
@@ -819,6 +833,7 @@ export default defineComponent({
     });
 
     return {
+      managing,
       loading, error, operatorError, retryConnection,
       search, sortBy, sortedFamiliesWithSource, families, selectedVersions,
       showDeprecated, isAdmin,

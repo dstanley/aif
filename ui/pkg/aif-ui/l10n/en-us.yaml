@@ -12,15 +12,58 @@ suseai:
     repositories: Repositories
     settings: Settings
   repositoryHealth:
-    title: Some chart repositories are unavailable
-    unknown: Chart repository status could not be checked
+    title: Some applications may be unavailable
+    compactTitle: '{count, plural, =1 {1 application repository unavailable} other {# application repositories unavailable}}'
+    unknown: Application repository status could not be checked
+    viewDetails: View details
+    hideDetails: Hide details
+    dismiss: Dismiss
+    impact: Applications from this repository may be unavailable.
+    nextRetry: 'next retry in {after}'
+    checkRepository: Check repository
     pending: The repository index is not ready yet.
-    guidance: Applications using these repositories may be unavailable. Open Settings and run Test to check chart access and repository status.
+    guidance: These application repositories could not be read. Open Settings and run Test to check chart access and repository status.
     settings: Open Settings
     unavailableApp: Repository unavailable
     missingApp: Repository not configured
     uncheckedApp: Repository status unknown
   pages:
+    catalog:
+      title: Catalog
+      search: Search the catalog
+      sectionsLabel: Catalog sections
+      showApps: Show apps
+      moreOptions: More options
+      empty: Nothing in the catalog matches.
+      browseApps: Browse all apps, by library and repository
+      deployToClusters: Deploy to other clusters…
+      operator: AI Factory operator
+      loadError: 'Could not load the catalog: {error}'
+      partialError: Some of the catalog could not be loaded. {errors}
+      tabs:
+        all: All
+        application: Applications
+        training: Training
+        inference: Inference
+      kinds:
+        application: Application
+        training: Training
+        inference: Inference
+      status:
+        all: All statuses
+        ready: Ready
+        beta: Beta
+      sections:
+        run: Deploy
+        validate: Validate your environment
+        validateHint: GPU, PyTorch, distributed, network and storage checks
+      deploy:
+        run: Deploy
+        test: Run test
+        benchmark: Run benchmark
+      scope:
+        profile: This cluster
+        blueprint: Any cluster
     about:
       title: About
       sections:
@@ -36,6 +79,18 @@ suseai:
           support: Support
     settings:
       title: Settings
+      tabs:
+        label: Settings sections
+        general: General
+        projects: Projects & Quotas
+        blueprints: Blueprints
+        profiles: Compute Profiles
+      showWrapped:
+        label: Show blueprints that inference profiles deploy in the Catalog
+        help: >-
+          By default the Catalog lists such a blueprint through its profile, whose card also offers
+          the blueprint’s own install to other clusters. Turn this on to list the blueprint itself
+          as well.
       apply: Apply
       notConfigured: No settings configured yet. Fill in the form and save to create them.
       test:
@@ -540,6 +595,15 @@ suseai:
       deleteSuccess: Deleted successfully
       confirmDelete: Are you sure you want to delete this item?
   workloads:
+    title: Deployments
+    newDeployment: New deployment
+    newApp: App
+    newBlueprint: Blueprint
+    tabsLabel: Deployment type
+    tabs:
+      training: Training
+      inference: Inference
+      applications: Applications
     customizedTooltip: Workload configuration deviates from the default blueprint definition
     openInRancher: Open in Rancher
     viewApp: Open app in Rancher
