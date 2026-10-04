@@ -44,6 +44,8 @@ function createEmptySpec() {
 
 export default {
   name: 'SettingsPage',
+  // Set when the page is the General tab of SettingsTabs, which carries the title.
+  props: { embedded: { type: Boolean, default: false } },
 
   components: {
     AsyncButton,
@@ -682,7 +684,7 @@ export default {
     <Loading v-else-if="!loaded" />
 
     <div v-else>
-      <h1>{{ t('suseai.pages.settings.title') }}</h1>
+      <h1 v-if="!embedded">{{ t('suseai.pages.settings.title') }}</h1>
 
       <Banner
         v-if="notFound"

@@ -83,7 +83,7 @@ describe('unavailable application interaction', () => {
   it('keeps an unreadable repository list distinct from an unconfigured registry', async () => {
     vi.mocked(fetchManagedRepos).mockRejectedValue(new Error('Forbidden'));
     const { wrapper, push } = await setup();
-    expect(wrapper.text()).toContain('Chart repository status could not be checked');
+    expect(wrapper.text()).toContain('Application repository status could not be checked');
     expect(wrapper.get('.app-tile').text()).toContain('Repository status unknown');
     await wrapper.get('.app-tile').trigger('click');
     expect(push).not.toHaveBeenCalled();

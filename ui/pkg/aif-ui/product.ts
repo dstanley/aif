@@ -88,7 +88,8 @@ export function init($plugin: IPlugin, store: RancherStore) {
   }
 
   VIRTUAL_TYPES.forEach(vType => {
-    virtualType({ name: vType.name, label: vType.label, route: vType.route });
+    // the weight on the entry itself as well: the sidebar orders by it
+    virtualType({ name: vType.name, label: vType.label, route: vType.route, weight: NAV_WEIGHTS[vType.name] });
   });
 
   Object.entries(NAV_WEIGHTS).forEach(([type, weight]) => {
