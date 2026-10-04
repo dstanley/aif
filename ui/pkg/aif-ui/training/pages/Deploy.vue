@@ -12,7 +12,9 @@ import { defineComponent } from 'vue';
 import jsyaml from 'js-yaml';
 import Submit from './Submit.vue';
 import ReadinessPanel from '../components/ReadinessPanel.vue';
-import { PRODUCT_NAME, PROFILES_PAGE } from '../config';
+import { CLUSTER_PRODUCT, trainingLink } from '../section';
+import { hasProfile, trainingClusters } from '../trainingclusters';
+import { DEPLOY_PAGE } from '../config';
 import {
   chartValuesFor, Check, checksFor, Form, isQueueScheduler, runPreflight, summarize
 } from '../preflight';
@@ -45,6 +47,8 @@ export default defineComponent({
       drawer:         '' as '' | 'resolved' | 'profile',
       codeSource:     'script' as CodeSource,
       clusterName:    '',
+      // where this profile can run: clusters that serve the AIJob API and have it
+      deployClusters: [] as { label: string; value: string }[],
     };
   },
 
@@ -52,6 +56,7 @@ export default defineComponent({
     loadClusterLabel(this.$store, String(this.$route.params.cluster || 'local')).then((l: string) => {
       this.clusterName = l;
     });
+    this.loadDeployClusters();
     const cms = await this.safeFindAll('configmap', 'configmaps');
     const profiles = profilesFrom(cms, (s: string) => jsyaml.load(s));
 
@@ -77,6 +82,10 @@ export default defineComponent({
   },
 
   computed: {
+    currentCluster(): string {
+      return String(this.$route.params.cluster || 'local');
+    },
+
     checks(): Check[] {
       // a deploy into a queueing project waits for room rather than failing on it
       const cluster = checksFor(runPreflight(this.form, this.facts), { profile: false, scheduler: this.form.scheduler });
@@ -227,11 +236,43 @@ export default defineComponent({
     },
 
     profilesRoute(): any {
-      return { name: `c-cluster-${ PRODUCT_NAME }-catalog`, params: { cluster: this.$route.params.cluster }, query: { tab: 'training' } };
+      return trainingLink(this.$route, 'catalog', { tab: 'training' });
     },
   },
 
   methods: {
+    /** The clusters this profile can run on, for the Cluster field; the current one is always offered. */
+    async loadDeployClusters() {
+      const here = this.currentCluster;
+      const profile = String(this.$route.query.profile || '');
+      let options: { label: string; value: string }[] = [];
+
+      try {
+        const found = await trainingClusters(this.$store);
+        const usable = await Promise.all(found.map(async(c) => (c.id === here || !profile || await hasProfile(this.$store, c.id, profile) ? c : null)));
+
+        options = usable.filter((c): c is NonNullable<typeof c> => !!c).map((c) => ({ label: c.id === 'local' ? `${ c.name } (management cluster)` : c.name, value: c.id }));
+      } catch (e) {
+        options = [];
+      }
+      if (!options.some((o) => o.value === here)) {
+        options.unshift({ label: this.clusterName || here, value: here });
+      }
+      this.deployClusters = options;
+    },
+    /**
+     * Run on another cluster: that cluster's own Deploy page, in its AI Training section, for the
+     * same profile. A full load, so every check reads the new cluster from a fresh store.
+     */
+    switchCluster(id: string) {
+      if (!id || id === this.currentCluster) {
+        return;
+      }
+      const to = { name: `c-cluster-${ CLUSTER_PRODUCT }-${ DEPLOY_PAGE }`, params: { cluster: id }, query: { profile: String(this.$route.query.profile || '') } };
+
+      window.location.assign(this.$router.resolve(to).href);
+    },
+
     /**
      * Submit's loadFacts picks a scheduler when the form has none. That is right for the open form
      * and wrong for a profile that fixes it, so the fixed fields are put back afterwards.
@@ -323,11 +364,12 @@ export default defineComponent({
             <h3>Basics</h3>
             <div class="row mb-10">
               <div class="col span-6">
-                <LabeledInput
-                  :value="clusterName"
+                <LabeledSelect
+                  :value="currentCluster"
+                  :options="deployClusters.length ? deployClusters : [{ label: clusterName || currentCluster, value: currentCluster }]"
                   label="Cluster"
-                  mode="view"
-                  tooltip="The cluster the run is installed on, and whose GPUs, quotas and queues the checks below read."
+                  tooltip="The cluster the job runs on, and whose GPUs, quotas and queues the checks below read. Listed: clusters that serve the AIJob API and have this profile."
+                  @update:value="switchCluster"
                 />
               </div>
             </div>

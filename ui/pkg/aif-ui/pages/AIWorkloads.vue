@@ -13,7 +13,7 @@ import OperatorErrorBanner from '../components/OperatorErrorBanner.vue';
 import AIWorkloadDetailPanel from '../components/AIWorkloadDetailPanel.vue';
 import type { AIWorkload } from '../types/aiworkload-types';
 import type { Blueprint } from '../types/blueprint-types';
-import { PRODUCT } from '../config/suseai';
+import { PRODUCT, PAGE_TYPES } from '../config/suseai';
 import ClusterChips from '../formatters/ClusterChips.vue';
 import RancherLinkCell from '../components/RancherLinkCell.vue';
 import { workloadRancherLinks } from '../utils/rancher-links';
@@ -29,6 +29,22 @@ const t       = useT();
 const vm      = getCurrentInstance()!.proxy as any;
 const router  = vm.$router;
 const route   = vm.$route;
+// Training runs moved to Jobs, which lists every cluster's; an old link to this page's Training tab
+// lands there.
+const trainingTab = computed(() => vm.$route.query.tab === 'training');
+
+if (trainingTab.value) {
+  router.replace({ name: `c-cluster-${ PRODUCT }-${ PAGE_TYPES.JOBS }`, params: { cluster: route.params.cluster } });
+}
+// Persistent workloads the operator deploys through Fleet, by what they are: inference endpoints (an
+// AIWorkload from an inference profile, or of category inference) and applications (every other).
+const TABS = [
+  { key: 'inference', label: t('suseai.workloads.tabs.inference', 'Inference') },
+  { key: '', label: t('suseai.workloads.tabs.applications', 'Applications') },
+];
+const currentTab = computed(() => (vm.$route.query.tab === 'inference' ? 'inference' : ''));
+const isInference = (w: AIWorkload) => !!(w.metadata as any).labels?.['trainingjobs/profile'] || (w.spec as any).category === 'inference';
+const newOpen = ref(false);
 const cluster = (route?.params?.cluster as string) || '_';
 
 const loading       = ref(true);
@@ -174,8 +190,9 @@ const filteredWorkloads = computed(() => {
         w.spec.source.sourceType.toLowerCase().includes(q),
       )
     : [...workloads.value];
+  const byTab = list.filter(w => (currentTab.value === 'inference') === isInference(w));
   const key = sortBy.value;
-  return list.sort((a, b) => {
+  return byTab.sort((a, b) => {
     switch (key) {
       case 'name-desc':
         return b.metadata.name.localeCompare(a.metadata.name);
@@ -406,8 +423,8 @@ async function doRetry(w: AIWorkload) {
   <main class="main-layout">
     <div class="outlet">
       <header class="fixed-header">
-        <h1>Workloads</h1>
-        <div class="actions-container">
+        <h1>{{ t('suseai.workloads.title', 'Workloads') }}</h1>
+        <div v-if="!trainingTab" class="actions-container">
           <div class="search-box">
             <input
               v-model="search"
@@ -422,14 +439,36 @@ async function doRetry(w: AIWorkload) {
             <option value="status">{{ t('suseai.common.sort.statusHealthy', 'Status (healthy first)') }}</option>
             <option value="source">{{ t('suseai.common.sort.source', 'Source (App, Blueprint)') }}</option>
           </select>
-          <button class="btn role-secondary ml-auto" @click="refresh" :disabled="loading" type="button">
+          <div class="new-deployment ml-auto" @click.stop>
+            <button class="btn role-primary" type="button" :aria-expanded="newOpen" @click="newOpen = !newOpen">
+              <i class="icon icon-plus" /> {{ t('suseai.workloads.newWorkload', 'New workload') }} <i class="icon icon-chevron-down" />
+            </button>
+            <ul v-if="newOpen" class="new-deployment-menu">
+              <li><router-link :to="{ name: `c-cluster-${ PRODUCT }-${ PAGE_TYPES.APPS }`, params: { cluster: route.params.cluster } }">{{ t('suseai.workloads.newApp', 'App') }}</router-link></li>
+              <li><router-link :to="{ name: `c-cluster-${ PRODUCT }-${ PAGE_TYPES.BLUEPRINTS }`, params: { cluster: route.params.cluster } }">{{ t('suseai.workloads.newBlueprint', 'Blueprint') }}</router-link></li>
+            </ul>
+          </div>
+          <button class="btn role-secondary" @click="refresh" :disabled="loading" type="button">
             <i v-if="loading" class="icon icon-spinner icon-spin" />
             <i v-else class="icon icon-refresh" />
             Refresh
           </button>
         </div>
+        <div v-else id="workloads-toolbar" />
       </header>
 
+      <nav class="workload-tabs" :aria-label="t('suseai.workloads.tabsLabel', 'Workload type')">
+        <router-link
+          v-for="tb in TABS"
+          :key="tb.key"
+          :to="{ query: tb.key ? { tab: tb.key } : {} }"
+          :class="['workload-tab', { active: currentTab === tb.key }]"
+        >
+          {{ tb.label }}
+        </router-link>
+      </nav>
+
+      <template v-if="!trainingTab">
       <OperatorErrorBanner v-if="operatorError" :operator-error="operatorError" @retry="retryConnection" />
 
       <Banner v-if="error" color="error" class="mb-20">{{ error }}</Banner>
@@ -645,6 +684,7 @@ async function doRetry(w: AIWorkload) {
           </table>
         </div>
       </div>
+      </template>
     </div>
 
     <!-- Delete confirmation modal -->
@@ -1062,4 +1102,38 @@ async function doRetry(w: AIWorkload) {
 .failure-cluster{ opacity: 0.7; }
 .failure-msg    { opacity: 0.9; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .op-detail      { margin-top: 2px; font-size: 12px; opacity: 0.8; }
+.workload-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.workload-tab {
+  padding: 8px 16px;
+  border-bottom: 2px solid transparent;
+  color: var(--body-text);
+  text-decoration: none;
+
+  &.active {
+    border-bottom-color: var(--primary);
+    color: var(--primary);
+  }
+}
+.new-deployment { position: relative; }
+.new-deployment-menu {
+  position: absolute;
+  right: 0;
+  z-index: 20;
+  min-width: 180px;
+  margin: 4px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--body-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  a { display: block; padding: 8px 14px; color: var(--body-text); text-decoration: none; }
+  a:hover { background: var(--accent-btn); }
+}
 </style>

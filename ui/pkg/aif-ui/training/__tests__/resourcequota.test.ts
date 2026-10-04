@@ -8,7 +8,7 @@ import {
   gpuUsed, isGpuQuota,
 } from '../resourcequota';
 import {
-  assembleProjects, buildNamespaceManifest, buildRancherProjectManifest, isBuiltInProject,
+  assembleProjects, buildNamespaceManifest, buildRancherProjectManifest, isAiProject, isBuiltInProject,
   projectIdFromSaveResult, projectSourceLabel, quotaScopeOf, resolveCreatedProject, validateCap,
 } from '../projects';
 import { availability } from '../quota';
@@ -318,6 +318,7 @@ describe('linking a new namespace to its Rancher project', () => {
     expect(manifest.metadata).not.toHaveProperty('name');
     expect(manifest.metadata.generateName).toBe('p-');
     expect(manifest.spec.displayName).toBe('Team A');
+    expect(isAiProject(manifest)).toBe(true); // so the operator hands it the registry credentials
   });
 
   // The normal path: the shell's Project model proxies save() to Norman and hands back the Norman

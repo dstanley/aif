@@ -19,8 +19,9 @@ import jsyaml from 'js-yaml';
 import { saferDump } from '@shell/utils/create-yaml';
 import {
   CD_CHANNEL_DEVICE_CLASS, CHART_NAME, CHART_REPO, CHART_REPO_TYPE, GPU_DEVICE_CLASS, GPU_RESOURCE,
-  ENDPOINTS_PAGE, JOB_LABEL, JOB_LABEL_VALUE, PRODUCT_NAME, PROFILES_PAGE, TYPES
+  JOB_LABEL, JOB_LABEL_VALUE, PRODUCT_NAME, PROFILES_PAGE, TYPES
 } from '../config';
+import { trainingLink } from '../section';
 import {
   chartValuesFor, Check, DEFAULT_FORM, Facts, Form, estimateScratch, formFromManifest, formFromValues, GpuNode,
   checksFor, isQueueScheduler, parseCpu, parseMem, PvcInfo, resolveGpuMode, runPreflight, SCHEDULER_BINDING,
@@ -560,6 +561,9 @@ export default defineComponent({
     // module constants are not in template scope
     chartName:     () => CHART_NAME,
     productName:   () => PRODUCT_NAME,
+    profilesListRoute(): any {
+      return trainingLink(this.$route, 'profiles');
+    },
     profilesPage:  () => PROFILES_PAGE,
     jobLabel:      () => JOB_LABEL,
     jobLabelValue: () => JOB_LABEL_VALUE,
@@ -863,7 +867,7 @@ export default defineComponent({
     },
 
     onProfileSaved() {
-      this.$router.push({ name: `c-cluster-${ PRODUCT_NAME }-settings`, params: { cluster: this.$route.params.cluster }, query: { tab: 'profiles' } });
+      this.$router.push(trainingLink(this.$route, 'profiles'));
     },
 
     async loadFacts() {
@@ -1200,9 +1204,7 @@ export default defineComponent({
           this.submitted = { operationName: '', operationNamespace: '' };
           done(true);
           setTimeout(() => {
-            this.$router.push({
-              name: `c-cluster-${ PRODUCT_NAME }-${ ENDPOINTS_PAGE }`, params: { cluster: this.$route.params.cluster }, query: { tab: 'training' }
-            });
+            this.$router.push(trainingLink(this.$route, 'jobs'));
           }, 1200);
 
           return;
@@ -1238,9 +1240,7 @@ export default defineComponent({
         this.submitted = { operationName: res.operationName, operationNamespace: res.operationNamespace };
         done(true);
         setTimeout(() => {
-          this.$router.push({
-            name: `c-cluster-${ PRODUCT_NAME }-${ ENDPOINTS_PAGE }`, params: { cluster: this.$route.params.cluster }, query: { tab: 'training' }
-          });
+          this.$router.push(trainingLink(this.$route, 'jobs'));
         }, 1200);
       } catch (e: any) {
         this.error = e?.message || String(e);
@@ -2289,7 +2289,7 @@ export default defineComponent({
       class="tj-wizard-foot"
     >
       <router-link
-        :to="{ name: `c-cluster-${ productName }-settings`, params: { cluster: $route.params.cluster }, query: { tab: 'profiles' } }"
+        :to="profilesListRoute"
         class="btn role-secondary"
       >
         Cancel

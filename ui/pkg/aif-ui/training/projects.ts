@@ -586,13 +586,25 @@ export function buildProjectBindingPatch(namespace: string, clusterId: string, r
   };
 }
 
+/**
+ * Marks a Rancher project as an AI project. The AI Factory operator then hands the registry
+ * credentials configured in AI Factory's Settings (SUSE Application Collection, SUSE Registry,
+ * NVIDIA NGC) to the project as a Rancher project-scoped secret, which Rancher copies into each of
+ * its namespaces as suse-ai-pull-combined: the pull secret the profiles name.
+ */
+export const AI_PROJECT_LABEL = 'ai-factory.suse.com/project';
+
+export function isAiProject(p: { metadata?: { labels?: Record<string, string> } }): boolean {
+  return p?.metadata?.labels?.[AI_PROJECT_LABEL] === 'true';
+}
+
 export function buildRancherProjectManifest(clusterId: string, displayName: string, description = '') {
   return {
     apiVersion: 'management.cattle.io/v3',
     kind:       'Project',
     // No metadata.name. Rancher assigns project ids itself and discards whatever we send, so
     // asking for one only creates a name we might believe in — see resolveCreatedProject.
-    metadata:   { generateName: 'p-', namespace: clusterId },
+    metadata:   { generateName: 'p-', namespace: clusterId, labels: { [AI_PROJECT_LABEL]: 'true' } },
     spec:       {
       clusterName: clusterId,
       displayName,

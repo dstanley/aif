@@ -6,12 +6,13 @@ import CountBox      from '@shell/components/CountBox';
 import Loading       from '@shell/components/Loading';
 import { checkOperatorConnection, getConnectionError } from '../utils/operator-config';
 import OperatorErrorBanner from '../components/OperatorErrorBanner.vue';
-import { listAIWorkloads }           from '../utils/operator-api';
+import { listAIWorkloads } from '../utils/operator-api';
+import { AIJOB_TYPE } from '../training/aijob';
 import { listBlueprints, groupBlueprintsByFamily, latestVersion } from '../utils/blueprint-api';
 import { phaseBadgeColor, phaseBadgeIcon } from '../utils/workload-status';
 import type { AIWorkload } from '../types/aiworkload-types';
 import type { Blueprint }                   from '../types/blueprint-types';
-import { PRODUCT, PAGE_TYPES }              from '../config/suseai';
+import { PRODUCT, PAGE_TYPES, MANAGEMENT_CLUSTER } from '../config/suseai';
 import ClusterChips from '../formatters/ClusterChips.vue';
 import { getClusters } from '../services/cluster-service';
 import type { ClusterInfo } from '../types/rancher-types';
@@ -33,25 +34,57 @@ const blueprints = ref<Blueprint[]>([]);
 const clusters   = ref<ClusterInfo[]>([]);
 const repositories = ref<ManagedRepo[]>([]);
 const repositoryError = ref('');
+// Training runs (AIJobs) on the local cluster. GPU capacity and projects are per cluster: each
+// cluster's AI Training section shows them.
+const aiJobs     = ref<any[]>([]);
+const deployOpen = ref(false);
+const FINISHED   = ['Succeeded', 'Failed', 'Cancelled'];
 
 // ── Computed stats ─────────────────────────────────────────────────────────────
-const totalWorkloads   = computed(() => workloads.value.length);
-const runningWorkloads = computed(() => workloads.value.filter(w => w.status?.phase === 'Running').length);
+// Workloads are what is deployed or running now: AIWorkloads, and training runs that have not finished.
+const activeJobs       = computed(() => aiJobs.value.filter(j => !FINISHED.includes(j.status?.phase)));
+const totalWorkloads   = computed(() => workloads.value.length + activeJobs.value.length);
+const runningWorkloads = computed(() => workloads.value.filter(w => w.status?.phase === 'Running').length
+  + aiJobs.value.filter(j => j.status?.phase === 'Running').length);
 const degradedWorkloads = computed(() => workloads.value.filter(w => w.status?.phase === 'Degraded').length);
 const failedWorkloads  = computed(() => workloads.value.filter(w => w.status?.phase === 'Failed').length);
 const issueWorkloads   = computed(() => degradedWorkloads.value + failedWorkloads.value);
 
-const activeBlueprintFamilies = computed(() => {
-  const families = groupBlueprintsByFamily(blueprints.value);
-  let count = 0;
-  for (const versions of families.values()) {
-    if (versions.some(bp => !bp.spec.deprecated)) count++;
-  }
-  return count;
-});
+interface RecentItem { key: string; name: string; phase: string; color: string; icon: string; type: string; detail: string; clusters: string[] | null; created: string }
 
-// Most recent 5 workloads for the activity feed
-const recentWorkloads = computed(() => workloads.value.slice(0, 5));
+// A training run's badge. Its phases are not an AIWorkload's: a finished run is Succeeded,
+// Failed or Cancelled, and only Running and Failed carry an icon.
+const JOB_BADGE: Record<string, { color: string; icon: string }> = {
+  Running:   { color: 'bg-success', icon: 'icon-checkmark' },
+  Succeeded: { color: 'bg-success', icon: '' },
+  Failed:    { color: 'bg-error', icon: 'icon-x' },
+};
+
+// Most recent 5 workloads and training runs, newest first
+const recentWorkloads = computed<RecentItem[]>(() => [
+  ...workloads.value.map((w): RecentItem => ({
+    key:      `wl/${ w.metadata.namespace }/${ w.metadata.name }`,
+    name:     w.spec.displayName || w.metadata.name,
+    phase:    w.status?.phase || 'Pending',
+    color:    phaseBadgeColor(w.status?.phase),
+    icon:     phaseBadgeIcon(w.status?.phase),
+    type:     w.spec.source.sourceType === 'App' ? 'App' : 'Blueprint',
+    detail:   workloadSourceLabel(w),
+    clusters: w.spec.targetClusters || [],
+    created:  (w.metadata as any).creationTimestamp || '',
+  })),
+  ...aiJobs.value.map((j): RecentItem => ({
+    key:      `job/${ j.metadata.namespace }/${ j.metadata.name }`,
+    name:     j.spec?.displayName || j.metadata.name,
+    phase:    j.status?.phase || 'Pending',
+    color:    JOB_BADGE[j.status?.phase]?.color || 'bg-info',
+    icon:     JOB_BADGE[j.status?.phase]?.icon || '',
+    type:     'Training',
+    detail:   j.spec?.profile || j.spec?.source?.chartName || 'custom',
+    clusters: null,
+    created:  j.metadata.creationTimestamp || '',
+  })),
+].sort((a, b) => (a.created < b.created ? 1 : -1)).slice(0, 5));
 
 // Active (non-deprecated) blueprint families with their latest version
 const activeBlueprintList = computed(() => {
@@ -73,8 +106,24 @@ function workloadSourceLabel(w: AIWorkload): string {
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────────
-function goTo(pageType: string) {
-  router.push({ name: `c-cluster-${ PRODUCT }-${ pageType }`, params: { cluster } });
+function goTo(pageType: string, query?: Record<string, string>) {
+  deployOpen.value = false;
+  router.push({ name: `c-cluster-${ PRODUCT }-${ pageType }`, params: { cluster }, query });
+}
+
+// Through Steve, as the Jobs pages read them, so a user counts only the AIJobs their RBAC lets
+// them see; the operator's API answers with its own service account.
+async function refreshJobs() {
+  if (cluster !== MANAGEMENT_CLUSTER || !vm.$store.getters['cluster/schemaFor'](AIJOB_TYPE)) {
+    aiJobs.value = []; // not the cluster the AIJobs are on, an operator without the AIJob API, or no access
+
+    return;
+  }
+  try {
+    aiJobs.value = await vm.$store.dispatch('cluster/findAll', { type: AIJOB_TYPE, opt: { force: true } }) || [];
+  } catch {
+    aiJobs.value = [];
+  }
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────────
@@ -93,6 +142,7 @@ async function refresh() {
       listBlueprints().catch(() => ({ items: [] as Blueprint[] })),
       getClusters(vm.$store).catch(() => [] as ClusterInfo[]),
       refreshRepositoryHealth(),
+      refreshJobs(),
     ]);
     workloads.value  = wlResult.items || [];
     blueprints.value = bpResult.items || [];
@@ -125,7 +175,7 @@ async function retryConnection() {
 async function silentRefresh() {
   if (loading.value) return;
   try {
-    const [wlResult] = await Promise.all([listAIWorkloads(), refreshRepositoryHealth()]);
+    const [wlResult] = await Promise.all([listAIWorkloads(), refreshRepositoryHealth(), refreshJobs()]);
     workloads.value = wlResult.items || [];
   } catch { /* ignore */ }
 }
@@ -147,30 +197,94 @@ onUnmounted(() => {
     <div class="outlet">
       <header class="page-header">
         <h1>Overview</h1>
-        <button
-          class="btn role-secondary"
-          :disabled="loading"
-          type="button"
-          @click="refresh"
-        >
-          <i v-if="loading" class="icon icon-spinner icon-spin" />
-          <i v-else class="icon icon-refresh" />
-          Refresh
-        </button>
+        <div class="header-actions">
+          <div
+            class="deploy-menu"
+            @keydown.esc="deployOpen = false"
+          >
+            <button
+              class="btn role-primary"
+              type="button"
+              :aria-expanded="deployOpen"
+              @click="deployOpen = !deployOpen"
+            >
+              <i class="icon icon-plus" /> Deploy <i class="icon icon-chevron-down" />
+            </button>
+            <ul
+              v-if="deployOpen"
+              class="deploy-options"
+            >
+              <li>
+                <button
+                  type="button"
+                  @click="goTo(PAGE_TYPES.CLUSTERS)"
+                >
+                  Training job (on a cluster)
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  @click="goTo(PAGE_TYPES.BLUEPRINTS)"
+                >
+                  Blueprint
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  @click="goTo(PAGE_TYPES.APPS)"
+                >
+                  App
+                </button>
+              </li>
+            </ul>
+          </div>
+          <button
+            class="btn role-secondary"
+            :disabled="loading"
+            type="button"
+            @click="refresh"
+          >
+            <i
+              v-if="loading"
+              class="icon icon-spinner icon-spin"
+            />
+            <i
+              v-else
+              class="icon icon-refresh"
+            />
+            Refresh
+          </button>
+        </div>
       </header>
 
-      <OperatorErrorBanner v-if="operatorError" :operator-error="operatorError" @retry="retryConnection" />
+      <OperatorErrorBanner
+        v-if="operatorError"
+        :operator-error="operatorError"
+        @retry="retryConnection"
+      />
 
-      <Banner v-if="error" color="error" class="mb-20">{{ error }}</Banner>
+      <Banner
+        v-if="error"
+        color="error"
+        class="mb-20"
+      >
+        {{ error }}
+      </Banner>
 
       <Loading v-if="loading" />
 
       <template v-else-if="!operatorError">
-        <RepositoryHealthBanner :repositories="repositories" :error="repositoryError" />
+        <RepositoryHealthBanner
+          :repositories="repositories"
+          :error="repositoryError"
+          compact
+        />
         <!-- ── Summary cards ─────────────────────────────────────────────── -->
         <section class="summary-grid">
           <CountBox
-            name="Total Workloads"
+            name="Workloads"
             :count="totalWorkloads"
             primary-color-var="--sizzle-info"
             :clickable="true"
@@ -190,57 +304,69 @@ onUnmounted(() => {
             :clickable="true"
             @click="goTo(PAGE_TYPES.WORKLOADS)"
           />
-          <CountBox
-            name="Active Blueprints"
-            :count="activeBlueprintFamilies"
-            primary-color-var="--sizzle-3"
-            :clickable="true"
-            @click="goTo(PAGE_TYPES.BLUEPRINTS)"
-          />
         </section>
 
         <!-- ── Two-column lower section ──────────────────────────────────── -->
         <div class="lower-grid">
-          <!-- Recent Workloads -->
+          <!-- Recent Deployments -->
           <section class="panel">
             <div class="panel-header">
-              <h3>Recent Workloads</h3>
-              <button class="btn-link" type="button" @click="goTo(PAGE_TYPES.WORKLOADS)">
+              <h3>Recent workloads</h3>
+              <button
+                class="btn-link"
+                type="button"
+                @click="goTo(PAGE_TYPES.WORKLOADS)"
+              >
                 View all <i class="icon icon-chevron-right" />
               </button>
             </div>
 
-            <div v-if="!recentWorkloads.length" class="panel-empty">
+            <div
+              v-if="!recentWorkloads.length"
+              class="panel-empty"
+            >
               <i class="icon icon-folder-open" />
               No workloads deployed yet.
             </div>
 
-            <table v-else class="overview-table">
+            <table
+              v-else
+              class="overview-table"
+            >
               <thead>
                 <tr>
                   <th>State</th>
                   <th>Name</th>
-                  <th>Source</th>
+                  <th>Type / Profile</th>
                   <th>Cluster</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
                   v-for="w in recentWorkloads"
-                  :key="`${ w.metadata.namespace }/${ w.metadata.name }`"
+                  :key="w.key"
                 >
                   <td>
                     <BadgeState
-                      :color="phaseBadgeColor(w.status?.phase)"
-                      :icon="phaseBadgeIcon(w.status?.phase)"
-                      :label="w.status?.phase || 'Pending'"
+                      :color="w.color"
+                      :icon="w.icon"
+                      :label="w.phase"
                     />
                   </td>
-                  <td class="col-name">{{ w.spec.displayName || w.metadata.name }}</td>
-                  <td class="col-source">{{ workloadSourceLabel(w) }}</td>
+                  <td class="col-name">
+                    {{ w.name }}
+                  </td>
+                  <td class="col-type">
+                    {{ w.type }} · <code class="col-source">{{ w.detail }}</code>
+                  </td>
                   <td class="col-cluster">
+                    <span
+                      v-if="!w.clusters"
+                      class="text-muted"
+                    >local</span>
                     <ClusterChips
-                      :clusters="w.spec.targetClusters || []"
+                      v-else
+                      :clusters="w.clusters"
                       :cluster-info="clusters"
                       :show-label="false"
                       :clickable="false"
@@ -255,68 +381,38 @@ onUnmounted(() => {
           <section class="panel">
             <div class="panel-header">
               <h3>Active Blueprints</h3>
-              <button class="btn-link" type="button" @click="goTo(PAGE_TYPES.BLUEPRINTS)">
+              <button
+                class="btn-link"
+                type="button"
+                @click="goTo(PAGE_TYPES.BLUEPRINTS)"
+              >
                 View all <i class="icon icon-chevron-right" />
               </button>
             </div>
 
-            <div v-if="!activeBlueprintList.length" class="panel-empty">
+            <div
+              v-if="!activeBlueprintList.length"
+              class="panel-empty"
+            >
               <i class="icon icon-document" />
               No blueprints defined yet.
             </div>
 
-            <table v-else class="overview-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Latest Version</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="item in activeBlueprintList"
-                  :key="item.family"
-                >
-                  <td class="col-name">{{ item.latest.spec.displayName }}</td>
-                  <td>
-                    <span class="version-chip">v{{ item.latest.spec.version }}</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <ul
+              v-else
+              class="overview-list"
+            >
+              <li
+                v-for="item in activeBlueprintList"
+                :key="item.family"
+              >
+                <span class="col-name">{{ item.latest.spec.displayName }}</span>
+                <span class="list-version">v{{ item.latest.spec.version }}</span>
+              </li>
+            </ul>
           </section>
-        </div>
 
-        <!-- ── Quick actions ──────────────────────────────────────────────── -->
-        <section class="quick-actions">
-          <h3>Quick Actions</h3>
-          <div class="action-cards">
-            <button
-              class="action-card"
-              type="button"
-              @click="goTo(PAGE_TYPES.APPS)"
-            >
-              <i class="icon icon-apps icon-2x" />
-              <span>Browse Apps</span>
-            </button>
-            <button
-              class="action-card"
-              type="button"
-              @click="goTo(PAGE_TYPES.BLUEPRINTS)"
-            >
-              <i class="icon icon-document icon-2x" />
-              <span>Manage Blueprints</span>
-            </button>
-            <button
-              class="action-card"
-              type="button"
-              @click="goTo(PAGE_TYPES.WORKLOADS)"
-            >
-              <i class="icon icon-list-flat icon-2x" />
-              <span>View Workloads</span>
-            </button>
-          </div>
-        </section>
+        </div>
       </template>
     </div>
   </main>
@@ -335,7 +431,7 @@ onUnmounted(() => {
 // ── Summary cards ──────────────────────────────────────────────────────────────
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 24px;
 
@@ -361,6 +457,12 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 16px;
+}
+
+.panel-cluster {
+  margin-left: 6px;
+  font-size: 13px;
+  font-weight: normal;
 }
 
 .panel-header {
@@ -426,80 +528,53 @@ onUnmounted(() => {
   .col-source { color: var(--muted); font-size: 12px; font-family: monospace; }
 }
 
-.version-chip {
-  display: inline-block;
-  padding: 2px 7px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 500;
-  background: var(--accent-btn);
-  border: 1px solid var(--border);
-  color: var(--body-text);
-  font-family: monospace;
-}
+.overview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 
-// ── Quick actions ──────────────────────────────────────────────────────────────
-.quick-actions {
-  h3 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
-}
+  li {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
 
-.action-cards {
+    &:last-child { border-bottom: 0; }
+  }
+}
+.list-version { color: var(--muted); font-family: monospace; font-size: 12px; }
+.col-type code { background: none; padding: 0; }
+// ── Header actions ─────────────────────────────────────────────────────────────
+.header-actions {
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.action-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   gap: 8px;
-  padding: 20px 32px;
+  align-items: center;
+}
+.deploy-menu { position: relative; }
+.deploy-options {
+  position: absolute;
+  right: 0;
+  z-index: 20;
+  min-width: 260px;
+  margin: 4px 0 0;
+  padding: 4px 0;
+  list-style: none;
   background: var(--body-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-  color: var(--body-text);
-  font-size: 13px;
-  font-weight: 500;
-  transition: border-color 0.15s, background 0.15s;
+  border-radius: var(--border-radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 
-  .icon { opacity: 0.7; }
-
-  &:hover {
-    border-color: var(--primary);
-    background: var(--sortable-table-accent-bg);
-
-    .icon { opacity: 1; color: var(--primary); }
-  }
-}
-
-// ── Shared ─────────────────────────────────────────────────────────────────────
-.mb-20 { margin-bottom: 20px; }
-.ml-10 { margin-left: 10px; }
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 14px;
-  height: 32px;
-  border-radius: 6px;
-  font-weight: 500;
-  font-size: 13px;
-  cursor: pointer;
-  border: 1px solid;
-
-  &.role-secondary {
-    background: var(--body-bg);
-    border-color: var(--border);
+  button {
+    width: 100%;
+    padding: 8px 14px;
+    background: none;
+    border: 0;
+    text-align: left;
     color: var(--body-text);
+    cursor: pointer;
 
-    &:disabled { opacity: 0.6; cursor: not-allowed; }
+    &:hover { background: var(--accent-btn); }
   }
-
-  .icon-spin { animation: spin 1s linear infinite; }
 }
-
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

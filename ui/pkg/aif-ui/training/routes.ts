@@ -17,7 +17,7 @@ export const trainingRoutes = [
     redirect: (to: any) => ({ name: `c-cluster-${ PRODUCT_NAME }-settings`, params: to.params, query: { tab: 'projects' } }),
     meta:     { product: PRODUCT_NAME },
   },
-  // Profiles are managed under Settings > Compute Profiles; users find them in the Catalog
+  // Profiles are created and edited from each cluster's AI Training > Catalog, by those allowed to
   {
     name:     `c-cluster-${ PRODUCT_NAME }-${ PROFILES_PAGE }`,
     path:     `/c/:cluster/${ PRODUCT_NAME }/${ PROFILES_PAGE }`,
@@ -28,16 +28,13 @@ export const trainingRoutes = [
   page(DEPLOY_PAGE, () => import('./pages/Deploy.vue')),
   page(ENDPOINT_PAGE, () => import('./pages/DeployEndpoint.vue')),
   page(SUBMIT_PAGE, () => import('./pages/Submit.vue')),
-  // The training list is the Training tab of the Workloads page; links to the old list pages land
-  // there (inference endpoints are on the Deployments tab).
-  ...[ENDPOINTS_PAGE, JOBS_PAGE].map((name) => ({
-    name:     `c-cluster-${ PRODUCT_NAME }-${ name }`,
-    path:     `/c/:cluster/${ PRODUCT_NAME }/${ name }`,
-    redirect: (to: any) => ({
-      name:   `c-cluster-${ PRODUCT_NAME }-workloads`,
-      params: to.params,
-      query:  to.query.tab === 'inference' ? {} : { tab: 'training' },
-    }),
-    meta: { product: PRODUCT_NAME },
-  })),
+  // Jobs: training and test runs on every cluster
+  page(JOBS_PAGE, () => import('./pages/AllJobs.vue')),
+  // The old list page: its training runs are on Jobs now, its inference endpoints on Workloads.
+  {
+    name:     `c-cluster-${ PRODUCT_NAME }-${ ENDPOINTS_PAGE }`,
+    path:     `/c/:cluster/${ PRODUCT_NAME }/${ ENDPOINTS_PAGE }`,
+    redirect: (to: any) => (to.query.tab === 'inference' ? { name: `c-cluster-${ PRODUCT_NAME }-workloads`, params: to.params } : { name: `c-cluster-${ PRODUCT_NAME }-${ JOBS_PAGE }`, params: to.params }),
+    meta:     { product: PRODUCT_NAME },
+  },
 ];

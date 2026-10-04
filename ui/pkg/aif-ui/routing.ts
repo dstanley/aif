@@ -1,4 +1,5 @@
 import { PRODUCT, PAGE_TYPES } from './config/suseai';
+import { trainingRoutes } from './training/routes';
 
 export default [
   // Product root → redirect to Overview
@@ -7,6 +8,14 @@ export default [
     path:     `/c/:cluster/${PRODUCT}`,
     redirect: { name: `c-cluster-${PRODUCT}-${PAGE_TYPES.OVERVIEW}`, params: { product: PRODUCT } },
     meta:     { product: PRODUCT }
+  },
+
+  // Clusters: where AI runs, each cluster's GPUs and jobs, and enabling AI on a cluster
+  {
+    name:      `c-cluster-${PRODUCT}-${PAGE_TYPES.CLUSTERS}`,
+    path:      `/c/:cluster/${PRODUCT}/${PAGE_TYPES.CLUSTERS}`,
+    component: () => import('./pages/AiClusters.vue'),
+    meta:      { product: PRODUCT, category: 'clusters' }
   },
 
   // Overview page
@@ -65,7 +74,7 @@ export default [
   {
     name:      `c-cluster-${PRODUCT}-${PAGE_TYPES.SETTINGS}`,
     path:      `/c/:cluster/${PRODUCT}/${PAGE_TYPES.SETTINGS}`,
-    component: () => import('./pages/Settings.vue'),
+    component: () => import('./pages/SettingsTabs.vue'),
     meta:      { product: PRODUCT, category: 'settings' }
   },
 
@@ -124,5 +133,16 @@ export default [
     path:      `/c/:cluster/${PRODUCT}/home`,
     redirect:  { name: `c-cluster-${PRODUCT}-${PAGE_TYPES.OVERVIEW}`, params: { product: PRODUCT } },
     meta:      { product: PRODUCT }
-  }
+  },
+
+  // Everything a user can deploy
+  {
+    name:      `c-cluster-${PRODUCT}-catalog`,
+    path:      `/c/:cluster/${PRODUCT}/catalog`,
+    component: () => import('./pages/Catalog.vue'),
+    meta:      { product: PRODUCT, category: 'catalog' }
+  },
+
+  // Training workloads, profiles and projects
+  ...trainingRoutes,
 ];

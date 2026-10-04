@@ -11,7 +11,8 @@ import { AIJOB_TYPE } from '../aijob';
 import RunDetail from '../components/RunDetail.vue';
 import VolumeFiles from '../components/VolumeFiles.vue';
 import YamlViewer, { YamlDoc } from '../components/YamlViewer.vue';
-import { PRODUCT_NAME, PROFILES_PAGE, SUBMIT_PAGE, TYPES } from '../config';
+import { SUBMIT_PAGE, TYPES } from '../config';
+import { inClusterSection, trainingLink } from '../section';
 import { AIWORKLOAD_TYPE, BLUEPRINT_TYPE } from '../inference';
 import { profilesFrom } from '../profiles';
 import {
@@ -48,9 +49,9 @@ export default defineComponent({
         jobs: [] as any[], pytorchJobs: [] as any[], kueueWorkloads: [] as any[], apps: [] as any[], pods: [] as any[], claimTemplates: [] as any[], aiWorkloads: [] as any[], blueprints: [] as any[], configMaps: [] as any[], pvcs: [] as any[], aiJobs: [] as any[]
       },
       error:  '' as string,
-      // ?project=<namespace>&state=<state> preset the filters, so other pages can link to a view
+      // ?project=<namespace>&state=<state>&q=<text> preset the filters, so other pages can link to a view
       filter: {
-        ...ALL_RUNS, project: String(this.$route.query.project || ''), state: String(this.$route.query.state || '')
+        ...ALL_RUNS, project: String(this.$route.query.project || ''), state: String(this.$route.query.state || ''), text: String(this.$route.query.q || '')
       } as RunFilter,
       sortKey:  'created' as RunSortKey,
       sortDesc: true,
@@ -89,12 +90,18 @@ export default defineComponent({
 
   computed: {
     columns: () => COLUMNS,
+    clusterSection(): boolean {
+      return inClusterSection(this.$route);
+    },
     states:  () => STATES,
 
     // The tab is in the URL (?tab=training|inference), so a link opens the same view.
     tab(): '' | 'training' | 'inference' {
       if (this.fixedTab) {
         return this.fixedTab as 'training' | 'inference';
+      }
+      if (this.clusterSection) {
+        return 'training'; // a cluster's AI Training section lists its training runs
       }
       const t = this.$route.query.tab;
 
@@ -154,16 +161,10 @@ export default defineComponent({
     },
 
     routes(): Record<string, any> {
-      const params = { cluster: this.$route.params.cluster };
-
       return {
-        submit:   { name: `c-cluster-${ PRODUCT_NAME }-${ SUBMIT_PAGE }`, params },
-        training: {
-          name: `c-cluster-${ PRODUCT_NAME }-catalog`, params, query: { tab: 'training' }
-        },
-        inference: {
-          name: `c-cluster-${ PRODUCT_NAME }-catalog`, params, query: { tab: 'inference' }
-        },
+        submit:    trainingLink(this.$route, SUBMIT_PAGE),
+        training:  trainingLink(this.$route, 'catalog', { tab: 'training' }),
+        inference: trainingLink(this.$route, 'catalog', { tab: 'inference' }),
       };
     },
   },
@@ -367,7 +368,7 @@ export default defineComponent({
       v-if="!fixedTab"
       class="fixed-header"
     >
-      <h1>{{ t('trainingjobs.endpoints.title') }}</h1>
+      <h1>{{ clusterSection ? 'Jobs' : t('trainingjobs.endpoints.title') }}</h1>
     </header>
     <Teleport
       defer
@@ -493,7 +494,7 @@ export default defineComponent({
     />
 
     <div
-      v-if="!fixedTab"
+      v-if="!fixedTab && !clusterSection"
       class="tj-tabs"
     >
       <router-link
