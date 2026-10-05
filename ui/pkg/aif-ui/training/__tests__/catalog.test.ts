@@ -93,3 +93,37 @@ describe('tabItems', () => {
     expect(tabItems('application', items, blueprints).map((i) => i.title)).toEqual(['NVIDIA RAG']);
   });
 });
+
+describe('a cluster\'s Catalog fits its GPUs', async() => {
+  const { fitToCluster, needsGpu } = await import('../catalog');
+  const items = catalogItems([
+    profile({ name: 'gpu-job', displayName: 'GPU job', form: { gpuMode: 'auto' } }),
+    profile({ name: 'cpu-job', displayName: 'CPU job', form: { gpuMode: 'none' } }),
+    profile({ name: 'cpu-test', displayName: 'CPU test', purpose: 'test', form: { gpuMode: 'none' } }),
+    profile({ name: 'gpu-test', displayName: 'GPU test', purpose: 'test', form: { gpuMode: 'dra' } }),
+    profile({ name: 'endpoint', type: 'inference', displayName: 'Endpoint', form: { gpuMode: 'none' } }),
+  ], [], false);
+
+  it('knows what needs a GPU', () => {
+    expect(items.filter(needsGpu).map((i) => i.title)).toEqual(['GPU job', 'GPU test', 'Endpoint']);
+  });
+
+  it('leaves GPU profiles out where there are no GPUs, and counts them', () => {
+    const f = fitToCluster(items, 0, false);
+
+    expect(f.items.map((i) => i.title)).toEqual(['CPU job', 'CPU test']);
+    expect(f.hidden).toBe(3);
+    expect(fitToCluster(items, 0, true).items).toHaveLength(5);
+  });
+
+  it('leaves everything in where the GPUs are not known, or there are some', () => {
+    expect(fitToCluster(items, null, false)).toEqual({ items, hidden: 0 });
+    expect(fitToCluster(items, 2, false).hidden).toBe(0);
+  });
+
+  it('offers CPU profiles apart on a cluster with GPUs', () => {
+    expect(catalogSections(items, true).map((s) => [s.key, s.items.map((i) => i.title)])).toEqual([
+      ['run', ['GPU job', 'Endpoint']], ['validate', ['GPU test']], ['cpu', ['CPU job', 'CPU test']],
+    ]);
+  });
+});

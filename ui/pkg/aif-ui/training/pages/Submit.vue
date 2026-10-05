@@ -333,6 +333,7 @@ export default defineComponent({
         { label: `Auto (detected: ${ this.resolvedGpuMode })`, value: 'auto' },
         { label: 'Device plugin (nvidia.com/gpu)', value: 'device-plugin' },
         { label: 'DRA (ResourceClaim)', value: 'dra' },
+        { label: 'None (CPU only)', value: 'none' },
       ];
     },
     modeOptions() {

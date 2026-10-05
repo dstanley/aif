@@ -137,13 +137,18 @@ export function filterCatalog(items: CatalogItem[], kind: '' | CatalogKind, f: C
  * The Catalog's sections for a list: what users deploy first, then the tests and benchmarks that
  * validate the environment, which are occasional and collapsible.
  */
-export function catalogSections(items: CatalogItem[]): { key: string; title: string; collapsible: boolean; items: CatalogItem[] }[] {
-  const validate = items.filter((i) => i.purpose === 'test' || i.purpose === 'benchmark');
-  const rest = items.filter((i) => !validate.includes(i));
+export function catalogSections(items: CatalogItem[], cpuApart = false): { key: string; title: string; collapsible: boolean; items: CatalogItem[] }[] {
+  // on a cluster with GPUs, CPU-only profiles are offered apart, after the rest: still there for
+  // data preparation and platform checks, not in the way of the GPU work
+  const cpu = cpuApart ? items.filter((i) => i.from === 'profile' && !needsGpu(i)) : [];
+  const gpuSide = items.filter((i) => !cpu.includes(i));
+  const validate = gpuSide.filter((i) => i.purpose === 'test' || i.purpose === 'benchmark');
+  const rest = gpuSide.filter((i) => !validate.includes(i));
 
   return [
-    { key: 'run', title: validate.length ? 'Run or deploy' : '', collapsible: false, items: rest },
+    { key: 'run', title: validate.length || cpu.length ? 'Run or deploy' : '', collapsible: false, items: rest },
     { key: 'validate', title: 'Validate your environment', collapsible: true, items: validate },
+    { key: 'cpu', title: 'CPU only', collapsible: false, items: cpu },
   ].filter((s) => s.items.length);
 }
 
@@ -153,4 +158,25 @@ export function catalogSections(items: CatalogItem[]): { key: string; title: str
  */
 export function deployLabel(i: CatalogItem): string {
   return i.purpose === 'test' ? 'Run test' : i.purpose === 'benchmark' ? 'Run benchmark' : i.kind === 'training' ? 'Run' : 'Deploy';
+}
+
+/** Whether a Catalog item needs a GPU to run: a training profile unless it is CPU-only (gpu.mode none);
+ * an inference profile always (its blueprints serve on GPUs). Blueprints and apps are not judged. */
+export function needsGpu(i: CatalogItem): boolean {
+  if (i.from !== 'profile' || !i.profile) {
+    return false;
+  }
+
+  return i.profile.type === 'inference' || i.profile.form?.gpuMode !== 'none';
+}
+
+/** What a cluster's Catalog offers, given its GPUs: on a cluster without GPUs the GPU profiles are left
+ * out (and counted) unless showAll; null GPUs (not known) leaves everything in. */
+export function fitToCluster(items: CatalogItem[], gpus: number | null, showAll: boolean): { items: CatalogItem[]; hidden: number } {
+  if (gpus !== 0 || showAll) {
+    return { items, hidden: 0 };
+  }
+  const fit = items.filter((i) => !needsGpu(i));
+
+  return { items: fit, hidden: items.length - fit.length };
 }

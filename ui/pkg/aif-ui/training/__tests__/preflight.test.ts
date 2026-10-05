@@ -739,3 +739,30 @@ describe('commands survive the form', () => {
     expect(splitArgs('python /mnt/config/train.py --lr "2e-5" --name \'my run\'')).toEqual(['python', '/mnt/config/train.py', '--lr', '2e-5', '--name', 'my run']);
   });
 });
+
+describe('a CPU-only run (GPU request mode none)', () => {
+  const noGpus = facts({
+    devicePluginGpus: 0, draClassExists: false, gpuNodes: [], capacity: { total: { gpu: 0, cpu: 16, memory: 0 }, free: { gpu: 0, cpu: 16, memory: 0 } }
+  });
+  const cpuForm: Form = {
+    ...DEFAULT_FORM, gpuMode: 'none', namespace: 'team-a', releaseName: 'cpu-1', scheduler: 'none', queue: ''
+  };
+
+  it('passes on a cluster without GPUs, and says it runs on CPUs', () => {
+    const checks = runPreflight(cpuForm, noGpus);
+
+    expect(checks.filter((c) => c.severity === 'fail').map((c) => c.id)).not.toContain('gpu');
+    expect(checks.find((c) => c.id === 'gpu')).toMatchObject({ severity: 'pass', title: 'No GPU: runs on CPUs only' });
+    expect(checks.find((c) => c.id === 'capacity')).toBeUndefined();
+  });
+
+  it('refuses GPU settings that cannot apply without a GPU', () => {
+    expect(checkIds({ ...cpuForm, gpuShareMiB: 4096 }, noGpus)).toContain('gpu');
+    expect(checkIds({ ...cpuForm, gpuProduct: 'NVIDIA RTX A2000 12GB' }, noGpus)).toContain('gpu');
+  });
+
+  it('installs gpu.mode none and reads it back, rather than falling back to auto', () => {
+    expect(chartValues(cpuForm).gpu.mode).toBe('none');
+    expect(formFromValues({ gpu: { mode: 'none' } }, DEFAULT_FORM).form.gpuMode).toBe('none');
+  });
+});

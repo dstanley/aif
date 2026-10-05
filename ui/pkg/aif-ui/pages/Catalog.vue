@@ -24,8 +24,9 @@ import { PRODUCT } from '../config/suseai';
 import { profilesFrom, Profile } from '../training/profiles';
 import { DEPLOY_PAGE, ENDPOINT_PAGE, SUBMIT_PAGE } from '../training/config';
 import {
-  CatalogApp, CatalogBlueprint, CatalogItem, CatalogKind, CatalogTab, catalogItems, catalogSections, deployLabel, filterCatalog, tabItems
+  CatalogApp, CatalogBlueprint, CatalogItem, CatalogKind, CatalogTab, catalogItems, catalogSections, deployLabel, filterCatalog, fitToCluster, tabItems
 } from '../training/catalog';
+import { clusterGpus } from '../training/trainingclusters';
 import {
   CATALOG_SHOW_APPS, CATALOG_SHOW_WRAPPED, getPref, setPref
 } from '../training/prefs';
@@ -79,9 +80,14 @@ const showApps = computed({
   set: (value: boolean) => setPref(CATALOG_SHOW_APPS.key, CATALOG_SHOW_APPS.def, value),
 });
 const items = computed(() => catalogItems(profiles.value, blueprints.value, showWrapped.value, showApps.value ? apps.value : []));
-const visible = computed(() => filterCatalog(tabItems(tab.value, items.value, blueprints.value), '', filter.value));
+// in a cluster's section, the Catalog fits the cluster: no GPU profiles where there are no GPUs
+// (unless asked for), CPU-only profiles apart where there are
+const clusterGpuCount = ref<number | null>(null);
+const showAllProfiles = ref(false);
+const fitted = computed(() => (clusterSection ? fitToCluster(items.value, clusterGpuCount.value, showAllProfiles.value) : { items: items.value, hidden: 0 }));
+const visible = computed(() => filterCatalog(tabItems(tab.value, fitted.value.items, blueprints.value), '', filter.value));
 // tests and benchmarks under their own heading; one untitled section when there are none
-const sections = computed(() => catalogSections(visible.value));
+const sections = computed(() => catalogSections(visible.value, clusterSection && (clusterGpuCount.value || 0) > 0));
 // the tests and benchmarks section starts closed: occasional, and it would push the rest down
 const openSections = reactive<Record<string, boolean>>({});
 const isOpen = (s: { key: string; collapsible: boolean }) => !s.collapsible || !!openSections[s.key] || !!filter.value.text;
@@ -92,7 +98,13 @@ async function load() {
   error.value = '';
   try {
     if (clusterSection) {
-      profiles.value = profilesFrom(await store.dispatch('cluster/findAll', { type: 'configmap', opt: { force: true } }), (s: string) => jsyaml.load(s));
+      const [cms, gpus] = await Promise.all([
+        store.dispatch('cluster/findAll', { type: 'configmap', opt: { force: true } }),
+        clusterGpus(store, String(vm.$route.params.cluster)),
+      ]);
+
+      profiles.value = profilesFrom(cms, (s: string) => jsyaml.load(s));
+      clusterGpuCount.value = gpus ? gpus.count : null;
 
       return;
     }
@@ -325,6 +337,25 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
         :label="error"
       />
 
+      <p
+        v-if="clusterSection && (fitted.hidden || showAllProfiles)"
+        class="catalog-fit"
+      >
+        <template v-if="fitted.hidden">
+          {{ fitted.hidden }} GPU profile{{ fitted.hidden === 1 ? '' : 's' }} hidden: this cluster has no GPUs.
+        </template>
+        <template v-else>
+          Showing every profile, including those that need a GPU this cluster does not have.
+        </template>
+        <button
+          type="button"
+          class="btn-link catalog-fit-toggle"
+          @click="showAllProfiles = !showAllProfiles"
+        >
+          {{ showAllProfiles ? 'Show only what this cluster can run' : 'Show all' }}
+        </button>
+      </p>
+
       <template v-if="visible.length">
         <section
           v-for="section in sections"
@@ -485,6 +516,9 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
 </template>
 
 <style lang="scss" scoped>
+.catalog-fit { margin: 0 0 12px; font-size: 14px; opacity: 0.8; }
+.catalog-fit-toggle { background: none; border: 0; padding: 0 0 0 8px; color: var(--link); cursor: pointer; font-size: 14px; }
+
 .fixed-header {
   margin-bottom: 20px;
   .actions-container {

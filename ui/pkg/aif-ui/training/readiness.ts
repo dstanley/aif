@@ -153,7 +153,13 @@ export interface WorkersNow {
  * How many workers of this shape the cluster could start right now: GPUs free for the request mode,
  * and on each GPU node how many workers its free CPU, memory and ephemeral storage hold.
  */
-export function workersSchedulableNow(form: Form, facts: Facts, gpuMode: 'device-plugin' | 'dra'): WorkersNow {
+export function workersSchedulableNow(form: Form, facts: Facts, gpuMode: 'device-plugin' | 'dra' | 'none'): WorkersNow {
+  if (gpuMode === 'none') {
+    // a CPU-only run: the estimate counts GPUs and GPU nodes, so it does not apply
+    return {
+      available: null, gpuOnly: false, limitedBy: ''
+    };
+  }
   const per = Math.max(1, Number(form.gpusPerNode) || 1);
   const gpuFree = gpuMode === 'dra' ? Math.max(0, facts.draDevices - facts.draAllocated) : Math.max(0, facts.capacity?.free?.gpu ?? 0);
   const byGpu = Math.floor(gpuFree / per);
