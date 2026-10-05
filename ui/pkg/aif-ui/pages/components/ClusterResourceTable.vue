@@ -1,18 +1,33 @@
 <template>
   <div class="cluster-resource-table">
     <!-- Loading state -->
-    <div v-if="loading" class="table-loading">
-      <div class="loading-text">Checking cluster resources...</div>
+    <div
+      v-if="loading"
+      class="table-loading"
+    >
+      <div class="loading-text">
+        Checking cluster resources...
+      </div>
     </div>
 
     <!-- Error state -->
-    <div v-else-if="error" class="table-error">
-      <div class="error-text">{{ error }}</div>
-      <div class="error-hint">Showing basic cluster information only</div>
+    <div
+      v-else-if="error"
+      class="table-error"
+    >
+      <div class="error-text">
+        {{ error }}
+      </div>
+      <div class="error-hint">
+        Showing basic cluster information only
+      </div>
     </div>
 
     <!-- Cluster selection table -->
-    <div v-else-if="clusters.length > 0" class="table-container">
+    <div
+      v-else-if="clusters.length > 0"
+      class="table-container"
+    >
       <table class="cluster-table table">
         <thead>
           <tr>
@@ -27,12 +42,24 @@
                 @update:value="toggleSelectAllSelectable"
               />
             </th>
-            <th class="col-cluster">Cluster</th>
-            <th class="col-nodes">Nodes</th>
-            <th class="col-cpu">CPU</th>
-            <th class="col-memory">Memory</th>
-            <th class="col-gpu">GPU</th>
-            <th class="col-status">Status</th>
+            <th class="col-cluster">
+              Cluster
+            </th>
+            <th class="col-nodes">
+              Nodes
+            </th>
+            <th class="col-cpu">
+              CPU
+            </th>
+            <th class="col-memory">
+              Memory
+            </th>
+            <th class="col-gpu">
+              GPU
+            </th>
+            <th class="col-status">
+              Status
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -41,15 +68,18 @@
             :key="cluster.clusterId"
             class="cluster-row"
             :class="{
-              'row-selected':    isClusterSelected(cluster.clusterId),
-              'row-disabled':    disabled,
+              'row-selected': isClusterSelected(cluster.clusterId),
+              'row-disabled': disabled,
               'row-unavailable': cluster.status === 'unavailable'
             }"
             @click="multiSelect ? toggleCluster(cluster.clusterId) : selectSingleCluster(cluster.clusterId)"
           >
             <td class="col-select">
               <!-- Checkbox for multi-select mode -->
-              <span v-if="multiSelect" @click.stop>
+              <span
+                v-if="multiSelect"
+                @click.stop
+              >
                 <Checkbox
                   :value="isClusterSelected(cluster.clusterId)"
                   :disabled="disabled || cluster.status === 'unavailable'"
@@ -64,19 +94,27 @@
                 :value="cluster.clusterId"
                 :checked="isClusterSelected(cluster.clusterId)"
                 :disabled="disabled || cluster.status === 'unavailable'"
-                @change="selectSingleCluster(cluster.clusterId)"
                 class="cluster-radio"
+                @change="selectSingleCluster(cluster.clusterId)"
               />
             </td>
             <td class="col-cluster">
-              <div class="cluster-name">{{ cluster.name }}</div>
+              <div class="cluster-name">
+                {{ cluster.name }}
+              </div>
             </td>
             <td class="col-nodes">
               <span v-if="cluster.nodeCount > 0">{{ cluster.nodeCount }}</span>
-              <span v-else class="no-resource">—</span>
+              <span
+                v-else
+                class="no-resource"
+              >—</span>
             </td>
             <td class="col-cpu">
-              <div v-if="cluster.resources.cpu.total > 0" class="resource-bar-container">
+              <div
+                v-if="cluster.resources.cpu.total > 0"
+                class="resource-bar-container"
+              >
                 <ProgressBarMulti
                   :values="[{ color: getResourceBarColor(cluster.resources.cpu.used, cluster.resources.cpu.total), value: cluster.resources.cpu.used }]"
                   :max="cluster.resources.cpu.total"
@@ -86,10 +124,16 @@
                   {{ Math.ceil((cluster.resources.cpu.used / cluster.resources.cpu.total) * 100) }}%
                 </div>
               </div>
-              <span v-else class="no-resource">Unknown</span>
+              <span
+                v-else
+                class="no-resource"
+              >Unknown</span>
             </td>
             <td class="col-memory">
-              <div v-if="cluster.resources.memory.total > 0" class="resource-bar-container">
+              <div
+                v-if="cluster.resources.memory.total > 0"
+                class="resource-bar-container"
+              >
                 <ProgressBarMulti
                   :values="[{ color: getResourceBarColor(cluster.resources.memory.used, cluster.resources.memory.total), value: cluster.resources.memory.used }]"
                   :max="cluster.resources.memory.total"
@@ -99,10 +143,16 @@
                   {{ Math.ceil((cluster.resources.memory.used / cluster.resources.memory.total) * 100) }}%
                 </div>
               </div>
-              <span v-else class="no-resource">Unknown</span>
+              <span
+                v-else
+                class="no-resource"
+              >Unknown</span>
             </td>
             <td class="col-gpu">
-              <div v-if="cluster.resources.gpu && cluster.resources.gpu.total > 0" class="resource-bar-container">
+              <div
+                v-if="cluster.resources.gpu && cluster.resources.gpu.total > 0"
+                class="resource-bar-container"
+              >
                 <ProgressBarMulti
                   :values="[{ color: getResourceBarColor(cluster.resources.gpu.used, cluster.resources.gpu.total), value: cluster.resources.gpu.used }]"
                   :max="cluster.resources.gpu.total"
@@ -112,7 +162,10 @@
                   {{ Math.ceil((cluster.resources.gpu.used / cluster.resources.gpu.total) * 100) }}%
                 </div>
               </div>
-              <span v-else class="no-resource">—</span>
+              <span
+                v-else
+                class="no-resource"
+              >—</span>
             </td>
             <td class="col-status">
               <StatusBadge
@@ -126,18 +179,33 @@
     </div>
 
     <!-- No clusters state -->
-    <div v-else class="no-clusters">
-      <div class="no-clusters-text">No clusters available</div>
-      <div class="no-clusters-hint">Check your cluster connections and permissions</div>
+    <div
+      v-else
+      class="no-clusters"
+    >
+      <div class="no-clusters-text">
+        No clusters available
+      </div>
+      <div class="no-clusters-hint">
+        Check your cluster connections and permissions
+      </div>
     </div>
 
     <!-- Selected cluster details (single-select mode) -->
-    <div v-if="!multiSelect && selectedClusters.length === 1 && selectedClusterInfo" class="selected-info">
-      <div class="selected-header">Selected: {{ selectedClusterInfo.name }}</div>
+    <div
+      v-if="!multiSelect && selectedClusters.length === 1 && selectedClusterInfo"
+      class="selected-info"
+    >
+      <div class="selected-header">
+        Selected: {{ selectedClusterInfo.name }}
+      </div>
     </div>
 
     <!-- Selected clusters display (multi-select mode) -->
-    <div v-if="multiSelect && selectedClusters.length > 0" class="selected-info">
+    <div
+      v-if="summary && multiSelect && selectedClusters.length > 0"
+      class="selected-info"
+    >
       <div class="selected-header">
         Selected: {{ selectedClusters.length }} cluster{{ selectedClusters.length !== 1 ? 's' : '' }}
       </div>
@@ -152,8 +220,8 @@
           <button
             class="chip-remove"
             :disabled="disabled"
-            @click="toggleCluster(clusterId)"
             title="Remove"
+            @click="toggleCluster(clusterId)"
           >×</button>
         </span>
       </div>
@@ -183,6 +251,8 @@ export default defineComponent({
     selectedClusters: { type: Array as PropType<string[]>, default: () => [] },
     // Controls visual appearance: radio buttons (false) vs checkboxes (true)
     multiSelect: { type: Boolean, default: false },
+    // the "Selected: N clusters" chips under a multi-select table; off where the page lists them itself
+    summary: { type: Boolean, default: true },
     disabled: { type: Boolean, default: false }
   },
   emits: ['update:selectedClusters'],

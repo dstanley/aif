@@ -7,6 +7,10 @@ import LabeledInput from '@components/Form/LabeledInput/LabeledInput.vue';
 import LabeledSelect from '@shell/components/form/LabeledSelect.vue';
 import AsyncButton from '@shell/components/AsyncButton.vue';
 import ChartRepoBanner from '../components/ChartRepoBanner.vue';
+import ProjectPlacementPanel from '../components/ProjectPlacementPanel.vue';
+import { ClusterScheduling, placedClusters, schedulingText } from '../placement';
+import { clusterScheduling } from '../placement-api';
+import { getAllClusters } from '../../services/rancher-apps';
 import { CapacitySummary, ProjectUsage, capacitySummary, gpuModels } from '../capacity';
 import {
   GPU_RESOURCE, SUBMIT_PAGE, TYPES
@@ -44,7 +48,7 @@ export default defineComponent({
   // Set when the page is the Projects & Quotas tab of Settings: the tab strip carries the title.
   props:      { embedded: { type: Boolean, default: false } },
   components: {
-    Loading, Banner, BadgeState, LabeledInput, LabeledSelect, AsyncButton, ChartRepoBanner
+    Loading, Banner, BadgeState, LabeledInput, LabeledSelect, AsyncButton, ChartRepoBanner, ProjectPlacementPanel
   },
 
   data() {
@@ -55,6 +59,14 @@ export default defineComponent({
       // user and role names for the members: bindings hold ids
       userNames: {} as Record<string, string>,
       roleNames: {} as Record<string, string>,
+      // every Rancher project and member binding (all clusters), for placing a project on others
+      rawProjects: [] as any[],
+      rawBindings: [] as any[],
+      // the project whose placement panel is open
+      placing:     null as any,
+      clusterNames: {} as Record<string, string>,
+      // how each other cluster schedules runs (KAI and its queues, or none), read when a project opens
+      scheduling:   {} as Record<string, ClusterScheduling>,
       // queues without a project, and the scheduler default: plumbing, closed by default
       showAdvanced: false,
       projects:            [] as AiProject[],
@@ -475,6 +487,11 @@ export default defineComponent({
           this.userNames = userNamesFrom(users);
           this.roleNames = roleNamesFrom(roles);
         }).catch(() => {});
+        this.rawProjects = rancherProjects;
+        getAllClusters(this.$store).then((cs) => {
+          this.clusterNames = Object.fromEntries(cs.map((c) => [c.id, c.name]));
+        }).catch(() => {});
+        this.rawBindings = prtbs;
         this.projects = assembleProjects(
           rancherProjects.filter((p: any) => p.metadata?.namespace === this.clusterId),
           namespaces,
@@ -507,6 +524,42 @@ export default defineComponent({
       } finally {
         this.refreshing = false;
       }
+    },
+
+    /** The Rancher project behind a row, for its placement. */
+    rancherProjectOf(p: AiProject): any {
+      return this.rawProjects.find((x: any) => `${ x.metadata?.namespace }:${ x.metadata?.name }` === p.rancherProjectId) || null;
+    },
+    /** One line per cluster the project is on: its queue there, or that runs there have none. */
+    schedulingLines(p: AiProject): { cluster: string; text: string }[] {
+      const rp = this.rancherProjectOf(p);
+      const clusters = rp ? placedClusters(rp) : ['local'];
+      const here = p.queue ? `Queue ${ p.queue }${ p.department ? ` · parent ${ p.department }` : '' }` : 'no queue for this project: default scheduling, no GPU quota';
+
+      return clusters.map((c) => ({
+        cluster: this.clusterNames[c] || c,
+        text:    c === (rp?.metadata?.namespace || 'local') ? here : schedulingText(this.scheduling[c], p.namespaces),
+      }));
+    },
+    toggleDetails(p: AiProject) {
+      this.openDetails[p.id] = !this.openDetails[p.id];
+      if (!this.openDetails[p.id]) {
+        return;
+      }
+      const rp = this.rancherProjectOf(p);
+      const home = rp?.metadata?.namespace || 'local';
+      const req = (opt: any) => this.$store.dispatch('management/request', opt);
+
+      for (const c of (rp ? placedClusters(rp) : []).filter((c) => c !== home && !this.scheduling[c])) {
+        clusterScheduling(req, c).then((s) => {
+          this.scheduling = { ...this.scheduling, [c]: s };
+        });
+      }
+    },
+    clustersOf(p: AiProject): string {
+      const rp = this.rancherProjectOf(p);
+
+      return rp ? placedClusters(rp).map((id) => this.clusterNames[id] || id).join(', ') : '';
     },
 
     /** The quota editor opens above the projects; bring it into view from a row below them. */
@@ -1511,7 +1564,7 @@ export default defineComponent({
                   type="button"
                   class="ap-name ap-name-toggle"
                   :aria-expanded="!!openDetails[p.id]"
-                  @click="openDetails[p.id] = !openDetails[p.id]"
+                  @click="toggleDetails(p)"
                 >
                   <i :class="['icon', openDetails[p.id] ? 'icon-chevron-down' : 'icon-chevron-right']" />
                   {{ p.displayName }}
@@ -1634,12 +1687,27 @@ export default defineComponent({
                     <dt>Members</dt>
                     <dd>{{ p.members.length ? p.members.map(m => memberLabel(m, userNames, roleNames)).join(', ') : '—' }}</dd>
                   </div>
-                  <div v-if="p.queue">
+                  <div v-if="rancherProjectOf(p)">
+                    <dt>Clusters</dt>
+                    <dd>
+                      {{ clustersOf(p) }}
+                      <button
+                        class="btn role-link btn-sm ap-place"
+                        @click="placing = p"
+                      >
+                        Place on clusters…
+                      </button>
+                    </dd>
+                  </div>
+                  <div>
                     <dt>Advanced scheduling</dt>
                     <dd>
-                      Queue {{ p.queue }}<template v-if="p.department">
-                        · parent {{ p.department }}
-                      </template>
+                      <div
+                        v-for="l in schedulingLines(p)"
+                        :key="l.cluster"
+                      >
+                        <span class="ap-sched-cluster">{{ l.cluster }}:</span> {{ l.text }}
+                      </div>
                     </dd>
                   </div>
                 </dl>
@@ -1759,6 +1827,17 @@ export default defineComponent({
         Cluster → Projects/Namespaces → Members
       </router-link>.
     </p>
+    <ProjectPlacementPanel
+      v-if="placing && rancherProjectOf(placing)"
+      :source="rancherProjectOf(placing)"
+      :namespaces="placing.namespaces"
+      :projects="rawProjects"
+      :bindings="rawBindings"
+      :user-names="userNames"
+      :role-names="roleNames"
+      @close="placing = null"
+      @applied="scheduling = {}; load()"
+    />
   </div>
 </template>
 
@@ -1779,6 +1858,7 @@ export default defineComponent({
 .ap-assign-select { min-width: 280px; }
 
 .ai-projects { padding: 20px; }
+.ap-sched-cluster { color: var(--muted); }
 .ap-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; h1 { margin-bottom: 0; } }
 .ap-title { display: flex; align-items: center; gap: 8px; }
 .ap-version { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; cursor: help; }
