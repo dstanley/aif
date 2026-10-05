@@ -1,0 +1,64 @@
+{{- /*
+AI-enabled clusters. One Fleet HelmOp installs AI Factory's training agent on every downstream
+cluster labelled ai-factory.suse.com/enabled=true (the Clusters page's Enable AI sets the label on
+the cluster's provisioning object; Rancher copies it to the Fleet cluster). The agent is this chart,
+from an OCI registry, running only the AIJob controller: jobs are created on the cluster they run on,
+with the user's identity, and the agent installs their charts there. It brings the training chart
+repository and the default profiles, and leaves out what only the management cluster has: the UI
+extension, the default blueprints, and the wait for Rancher's server CRDs. Registry credentials
+reach the cluster's AI projects as Rancher project-scoped secrets (see the projectsecrets
+controller), not through this.
+*/ -}}
+{{- if .Values.aiClusters.enabled }}
+apiVersion: fleet.cattle.io/v1alpha1
+kind: HelmOp
+metadata:
+  name: {{ include "aif-operator.fullname" . }}-cluster-agent
+  namespace: fleet-default
+  labels:
+    {{- include "aif-operator.labels" . | nindent 4 }}
+spec:
+  defaultNamespace: {{ .Release.Namespace }}
+  helm:
+    # Fleet takes an OCI chart's full reference in repo, and its version apart
+    repo: {{ .Values.aiClusters.agent.chart | quote }}
+    version: {{ .Values.aiClusters.agent.version | default .Chart.Version | quote }}
+    releaseName: {{ .Release.Name }}
+    # adopt the namespace and profiles an administrator created by hand before enabling AI here
+    takeOwnership: true
+    # chart values carry Go templates of their own; Fleet's ${ } templating must leave them alone
+    disablePreProcess: true
+    values:
+      manager:
+        image:
+          {{- toYaml .Values.manager.image | nindent 10 }}
+        args:
+          - --leader-elect
+          - --controllers=aijob
+        {{- with .Values.manager.aijobAllowedCharts }}
+        aijobAllowedCharts:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.manager.aijobDeniedValues }}
+        aijobDeniedValues:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      aiExtension:
+        enabled: false
+      defaultBlueprints:
+        enabled: false
+      rancherReadinessCheck:
+        enabled: false
+      crds:
+        # Fleet's Helm installs crds/ on first install; the CRD Job needs Rancher's kubectl image
+        # and hook RBAC the agent does not otherwise need
+        manageWithJob: false
+      trainingChart:
+        {{- toYaml .Values.trainingChart | nindent 8 }}
+      trainingProfiles:
+        install: true
+  targets:
+    - clusterSelector:
+        matchLabels:
+          ai-factory.suse.com/enabled: "true"
+{{- end }}

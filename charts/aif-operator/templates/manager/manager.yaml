@@ -44,6 +44,9 @@ spec:
           {{- with .Values.manager.aijobAllowedCharts }}
             - --aijob-allowed-charts={{ join "," . }}
           {{- end }}
+          {{- with .Values.manager.aijobDeniedValues }}
+            - --aijob-denied-values={{ join "," . }}
+          {{- end }}
             - --api-bind-address=:{{ .Values.api.port }}
           ports:
             - name: http

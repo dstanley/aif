@@ -1,3 +1,4 @@
+{{- if .Values.rancherReadinessCheck.enabled }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -60,3 +61,4 @@ spec:
               retry_wait --for=create namespace/cattle-ui-plugin-system
 
               echo "Rancher CRDs and namespace are ready."
+{{- end }}

@@ -19,6 +19,7 @@ package aijob
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,8 @@ type fakeHelm struct {
 	ensured   []helmClient.ReleaseSpec
 	deleted   []string
 	ensureErr error
+	// onEnsure runs on every EnsureRelease, before ensureErr is returned: what Helm leaves behind.
+	onEnsure func(helmClient.ReleaseSpec)
 }
 
 func newFakeHelm() *fakeHelm { return &fakeHelm{releases: map[string]*helmClient.ReleaseInfo{}} }
@@ -59,6 +62,9 @@ func (f *fakeHelm) EnsureRelease(_ context.Context, spec helmClient.ReleaseSpec)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ensured = append(f.ensured, spec)
+	if f.onEnsure != nil {
+		f.onEnsure(spec)
+	}
 	if f.ensureErr != nil {
 		return f.ensureErr
 	}
@@ -307,6 +313,70 @@ func TestDeletingTheRecordUninstallsARunningRelease(t *testing.T) {
 	assert.True(t, client.IgnoreNotFound(err) == nil && err != nil, "the AIJob is gone once the finalizer is removed")
 }
 
+func TestAnAIJobNeverAdoptsAReleaseItDidNotInstall(t *testing.T) {
+	h := newHarness(t, aijob("train-1"))
+	// an inference endpoint's release that happens to have the AIJob's name
+	h.helm.releases["train-1"] = &helmClient.ReleaseInfo{ChartName: "vllm", Status: helmClient.StatusDeployed, Revision: 3,
+		Values: map[string]interface{}{"commonLabels": map[string]interface{}{"app": "chat"}}}
+	h.reconcile("train-1")
+
+	j := h.get("train-1")
+	assert.Empty(t, h.helm.ensured, "nothing is installed over the existing release")
+	assert.Equal(t, v1alpha1.AIJobPhaseFailed, j.Status.Phase)
+	assert.Equal(t, "ReleaseConflict", j.Status.Result.Reason)
+	assert.NotNil(t, j.Status.Cleanup.DueAt, "a failed job still gets its retention scheduled")
+
+	h.clock = h.clock.Add(defaultRetention + time.Minute)
+	h.reconcile("train-1")
+	require.NoError(t, h.c.Delete(context.Background(), h.get("train-1")))
+	h.reconcile("train-1")
+	assert.Empty(t, h.helm.deleted, "neither retention nor deleting the AIJob uninstalls the other release")
+	assert.Contains(t, h.helm.releases, "train-1")
+}
+
+func TestTheReleaseRefusesToAdoptExistingObjects(t *testing.T) {
+	h := newHarness(t, aijob("train-1"))
+	h.reconcile("train-1")
+	require.Len(t, h.helm.ensured, 1)
+	assert.True(t, h.helm.ensured[0].RefuseAdoption)
+}
+
+func TestADeniedValueFailsWithoutInstalling(t *testing.T) {
+	h := newHarness(t, aijob("train-1", func(j *v1alpha1.AIJob) {
+		j.Spec.Values = &apixv1.JSON{Raw: []byte(`{"network":{"rdma":{"enabled":true,"hostLibPath":"/usr/lib64"}}}`)}
+	}))
+	h.r.DeniedValues = []string{"network.rdma.enabled", "network.hostNetwork"}
+	h.reconcile("train-1")
+	j := h.get("train-1")
+	assert.Empty(t, h.helm.ensured)
+	assert.Equal(t, v1alpha1.AIJobPhaseFailed, j.Status.Phase)
+	assert.Contains(t, j.Status.Result.Message, "network.rdma.enabled")
+}
+
+func TestADeniedValueLeftAtItsZeroValueInstalls(t *testing.T) {
+	// what the UI sends for a run without RDMA
+	h := newHarness(t, aijob("train-1", func(j *v1alpha1.AIJob) {
+		j.Spec.Values = &apixv1.JSON{Raw: []byte(`{"network":{"hostNetwork":false,"rdma":{"enabled":false,"hostLibPath":""}}}`)}
+	}))
+	h.r.DeniedValues = []string{"network.rdma.enabled", "network.hostNetwork"}
+	h.reconcile("train-1")
+	assert.Len(t, h.helm.ensured, 1)
+}
+
+func TestValueSet(t *testing.T) {
+	v := map[string]interface{}{
+		"a": map[string]interface{}{"on": true, "off": false, "s": "", "n": float64(0), "list": []interface{}{}},
+		"b": map[string]interface{}{"x": map[string]interface{}{"y": "set"}},
+		"c": "scalar",
+	}
+	for path, want := range map[string]bool{
+		"a.on": true, "a.off": false, "a.s": false, "a.n": false, "a.list": false, "a.missing": false,
+		"a": true, "b": true, "b.x.y": true, "c.under": false, "missing.path": false,
+	} {
+		assert.Equal(t, want, valueSet(v, strings.Split(path, ".")), path)
+	}
+}
+
 func TestAChartOutsideTheAllowListFailsWithoutInstalling(t *testing.T) {
 	h := newHarness(t, aijob("train-1"))
 	h.r.AllowedCharts = []string{"gpu-train-charts/other-chart"}
@@ -354,4 +424,62 @@ func TestAJobDeletedUnderTheRecordIsNotGivenAnOutcome(t *testing.T) {
 	require.NotNil(t, c)
 	assert.Equal(t, metav1.ConditionUnknown, c.Status)
 	assert.Equal(t, "ExecutionDeleted", c.Reason)
+}
+
+func TestTheJobOutlastsTheRetention(t *testing.T) {
+	h := newHarness(t, aijob("train-1"), aijob("train-2", func(j *v1alpha1.AIJob) {
+		j.Spec.Values = &apixv1.JSON{Raw: []byte(`{"job":{"ttlSecondsAfterFinished":3600}}`)}
+	}), aijob("train-3", func(j *v1alpha1.AIJob) {
+		j.Spec.Values = &apixv1.JSON{Raw: []byte(`{"job":{"ttlSecondsAfterFinished":9999999}}`)}
+	}))
+	want := int64((defaultRetention + executionTTLMargin).Seconds())
+	for name, ttl := range map[string]interface{}{"train-1": want, "train-2": want, "train-3": float64(9999999)} {
+		h.helm.ensured = nil
+		h.reconcile(name)
+		require.Len(t, h.helm.ensured, 1, name)
+		assert.Equal(t, ttl, h.helm.ensured[0].Values["job"].(map[string]interface{})["ttlSecondsAfterFinished"], name)
+	}
+}
+
+func TestAJobDeletedUnderTheRecordIsStillCleanedUp(t *testing.T) {
+	h := newHarness(t, aijob("train-1"))
+	h.reconcile("train-1")
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "train-1", Namespace: ns}}
+	require.NoError(t, h.c.Create(context.Background(), job))
+	h.reconcile("train-1")
+	require.NoError(t, h.c.Delete(context.Background(), job))
+	h.clock = t0.Add(time.Hour)
+	h.reconcile("train-1")
+	j := h.get("train-1")
+	require.NotNil(t, j.Status.Cleanup.DueAt)
+	assert.True(t, j.Status.Cleanup.DueAt.Time.Equal(t0.Add(time.Hour+defaultRetention)), "retention counts from when the deletion was seen")
+	assert.Empty(t, h.helm.deleted)
+
+	h.clock = t0.Add(time.Hour + defaultRetention + time.Minute)
+	h.reconcile("train-1")
+	j = h.get("train-1")
+	assert.Equal(t, []string{"train-1"}, h.helm.deleted, "the release, its claims and volumes do not leak")
+	assert.Equal(t, metav1.ConditionTrue, condStatus(j, v1alpha1.AIJobConditionExecutionCleaned))
+	assert.False(t, j.Status.Phase.IsTerminal(), "the outcome is still not known")
+
+	h.reconcile("train-1")
+	assert.Len(t, h.helm.ensured, 1, "a cleaned job is not reinstalled")
+}
+
+func TestAFailedInstallIsCleanedUpAtRetention(t *testing.T) {
+	h := newHarness(t, aijob("train-1"))
+	h.helm.ensureErr = errors.New(`execution error at (gpu-train-job/templates/preflight.yaml:12:5): preflight: bad values`)
+	// Helm records a failed install as a failed release
+	h.helm.onEnsure = func(spec helmClient.ReleaseSpec) {
+		h.helm.releases[spec.Name] = &helmClient.ReleaseInfo{Status: "failed", Revision: 1, Values: spec.Values}
+	}
+	res := h.reconcile("train-1")
+	j := h.get("train-1")
+	assert.Equal(t, v1alpha1.AIJobPhaseFailed, j.Status.Phase)
+	require.NotNil(t, j.Status.Cleanup.DueAt, "a failed install is given its retention at once")
+	assert.Positive(t, res.RequeueAfter, "and is reconciled again for it")
+
+	h.clock = j.Status.Cleanup.DueAt.Add(time.Minute)
+	h.reconcile("train-1")
+	assert.Equal(t, []string{"train-1"}, h.helm.deleted, "the half-applied release is removed")
 }

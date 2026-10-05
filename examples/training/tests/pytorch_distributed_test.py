@@ -42,9 +42,13 @@ env["nodes"] = os.environ.get("NNODES", "?")
 env["torch"] = torch.__version__
 env["nccl"] = ".".join(map(str, torch.cuda.nccl.version()))
 
+# the node (a pod's hostname is only its own name) and the physical GPU's UUID, so two ranks given
+# the same GPU are caught even from different pods; without a UUID, the pod and its device index
+node = os.environ.get("NODE_NAME") or socket.gethostname()
+gpu = str(getattr(torch.cuda.get_device_properties(dev), "uuid", "") or "") or f"{socket.gethostname()}/{dev}"
 hosts = [None] * world
-dist.all_gather_object(hosts, f"{socket.gethostname()}:{torch.cuda.get_device_name(dev)}")
-check("Every rank on its own GPU", lambda: (require(len(set(hosts)) == world or len({h.split(':')[0] for h in hosts}) == world or world == 1, f"ranks share a GPU: {hosts}"), f"{len({h.split(':')[0] for h in hosts})} host(s)")[1])
+dist.all_gather_object(hosts, f"{node}:{gpu}")
+check("Every rank on its own GPU", lambda: (require(len(set(hosts)) == world, f"ranks share a GPU: {hosts}"), f"{len({h.split(':')[0] for h in hosts})} node(s)")[1])
 
 
 def allreduce():
@@ -83,4 +87,7 @@ if rank == 0:
         merged.append({**c, "ok": not failed, "detail": c["detail"] if not failed else f"failed on rank(s) {failed}: " + next(cs[i]["detail"] for r, cs in enumerate(oks) if r in failed)})
     result = {"test": "PyTorch Distributed Test", "status": "pass" if all(c["ok"] for c in merged) else "fail", "checks": merged, "metrics": metrics, "env": env}
     print("AIF_RESULT " + json.dumps(result), flush=True)
+    if result["status"] != "pass":
+        # a check that failed fails again: ask the chart not to retry (job.failFastExitCodes)
+        open(os.environ.get("AIF_NO_RETRY_FILE", os.devnull), "a").close()
     raise SystemExit(0 if result["status"] == "pass" else 1)

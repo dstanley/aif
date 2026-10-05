@@ -115,6 +115,11 @@ type AIJobReconciler struct {
 	// entries. The operator installs with its own service account, so this is
 	// what stops an AIJob from installing an arbitrary chart. Empty allows any.
 	AllowedCharts []string
+	// DeniedValues are dotted chart-value paths an AIJob may not set to anything but a zero value
+	// (false, "", 0, null, or a map of those), e.g. "network.rdma.enabled": the allow-list bounds the
+	// chart, not its values, and a value that makes the pod privileged or shares the node's network
+	// is a grant the user creating the AIJob may not hold. Empty allows any.
+	DeniedValues []string
 	// RepoURLOverrides maps a ClusterRepo name to a URL to use instead of its
 	// spec.url. For running the operator outside the cluster, where an in-cluster
 	// repository Service does not resolve; nil in production.
@@ -216,6 +221,16 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("look up release: %w", err)
 	}
+	if release != nil && !ownsRelease(release, job.Name) {
+		// Someone else's release by this name. Never install over, observe, or
+		// uninstall it: the operator's rights would be acting for whoever named
+		// the AIJob.
+		if !st.Phase.IsTerminal() {
+			r.fail(job, "ReleaseConflict", "release "+job.Name+" already exists in "+job.Namespace+
+				" and was not installed by this AIJob; choose another name")
+		}
+		return r.afterCompletion(ctx, job, helm, false)
+	}
 	installed := release != nil
 
 	// Cancel: only meaningful before the job ends.
@@ -233,6 +248,15 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 			return reconcile.Result{}, nil
 		}
 		if res, done := r.install(ctx, job, helm); done {
+			if st.Phase.IsTerminal() {
+				// The install failed for good. Its retention starts now, and what a
+				// half-applied install left is removed with it.
+				rel, err := helm.LastRelease(ctx, job.Name)
+				if err != nil {
+					return reconcile.Result{}, fmt.Errorf("look up release: %w", err)
+				}
+				return r.afterCompletion(ctx, job, helm, rel != nil && ownsRelease(rel, job.Name))
+			}
 			return res, nil
 		}
 		installed = true
@@ -286,7 +310,13 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 		// ttl. The outcome is not known, so the phase is left as it was.
 		setCondition(st, gen, v1alpha1.AIJobConditionCompleted, metav1.ConditionUnknown, "ExecutionDeleted",
 			fmt.Sprintf("the %s was deleted before its outcome was observed", st.Execution.Kind))
-		return reconcile.Result{RequeueAfter: settledRequeue}, nil
+		// Still over: the release, its claims and volumes are cleaned up after the
+		// retention, counted from when the deletion was noticed.
+		if st.CompletedAt == nil {
+			t := metav1.NewTime(r.now())
+			st.CompletedAt = &t
+		}
+		return r.afterCompletion(ctx, job, helm, true)
 	}
 	setCondition(st, gen, v1alpha1.AIJobConditionCompleted, metav1.ConditionFalse, "InProgress", "")
 	// Only a job Kueue is holding can wait long; anything else installed is about
@@ -366,10 +396,7 @@ func (r *AIJobReconciler) afterCompletion(ctx context.Context, job *v1alpha1.AIJ
 	if st.Cleanup.CompletedAt != nil {
 		return reconcile.Result{}, nil
 	}
-	retention := defaultRetention
-	if d := job.Spec.Retention.ExecutionObjects; d != nil {
-		retention = d.Duration
-	}
+	retention := r.retention(job)
 	completed := r.now()
 	if st.CompletedAt != nil {
 		completed = st.CompletedAt.Time
@@ -413,13 +440,52 @@ func (r *AIJobReconciler) finalize(ctx context.Context, job *v1alpha1.AIJob, hel
 	}
 	if rel, err := helm.LastRelease(ctx, job.Name); err != nil {
 		return err
-	} else if rel != nil {
+	} else if rel != nil && ownsRelease(rel, job.Name) {
 		if err := helm.DeleteRelease(ctx, job.Name); err != nil {
 			return fmt.Errorf("uninstall on delete: %w", err)
 		}
 	}
 	controllerutil.RemoveFinalizer(job, finalizer)
 	return r.Update(ctx, job)
+}
+
+// executionTTLMargin is how long past the AIJob's retention the chart's own ttl
+// keeps the Job: the operator uninstalls the release at retention, and the ttl
+// is only the backstop for an operator that is gone.
+const executionTTLMargin = 24 * time.Hour
+
+func (r *AIJobReconciler) retention(job *v1alpha1.AIJob) time.Duration {
+	if d := job.Spec.Retention.ExecutionObjects; d != nil {
+		return d.Duration
+	}
+	return defaultRetention
+}
+
+// keepExecutionForRetention raises the chart's job.ttlSecondsAfterFinished to
+// outlast the retention, so the Job and its pods are not deleted under the record
+// before it has copied their final facts. A longer ttl the user chose is kept.
+func keepExecutionForRetention(values map[string]interface{}, retention time.Duration) {
+	jobValues, ok := values["job"].(map[string]interface{})
+	if !ok {
+		if _, set := values["job"]; set {
+			return // not this chart's job settings
+		}
+		jobValues = map[string]interface{}{}
+		values["job"] = jobValues
+	}
+	want := int64((retention + executionTTLMargin).Seconds())
+	if cur, ok := jobValues["ttlSecondsAfterFinished"].(float64); ok && int64(cur) >= want {
+		return
+	}
+	jobValues["ttlSecondsAfterFinished"] = want
+}
+
+// ownsRelease reports whether a release was installed for the AIJob named name: releaseSpec puts the
+// job-id common label into the values, and Helm keeps them with every revision.
+func ownsRelease(rel *helmClient.ReleaseInfo, name string) bool {
+	common, _ := rel.Values["commonLabels"].(map[string]interface{})
+	id, _ := common[v1alpha1.AIJobJobIDLabel].(string)
+	return id == name
 }
 
 // permanentError marks a source problem that retrying cannot fix.
@@ -438,12 +504,18 @@ func (r *AIJobReconciler) releaseSpec(ctx context.Context, job *v1alpha1.AIJob) 
 			return helmClient.ReleaseSpec{}, permanentError{fmt.Errorf("spec.values: %w", err)}
 		}
 	}
+	for _, path := range r.DeniedValues {
+		if valueSet(values, strings.Split(path, ".")) {
+			return helmClient.ReleaseSpec{}, permanentError{fmt.Errorf("spec.values sets %s, which is not allowed for AIJobs (operator --aijob-denied-values)", path)}
+		}
+	}
 	common, _ := values["commonLabels"].(map[string]interface{})
 	if common == nil {
 		common = map[string]interface{}{}
 	}
 	common[v1alpha1.AIJobJobIDLabel] = job.Name
 	values["commonLabels"] = common
+	keepExecutionForRetention(values, r.retention(job))
 
 	url := r.RepoURLOverrides[src.RepoName]
 	var repoTLS *tls.Config
@@ -468,7 +540,8 @@ func (r *AIJobReconciler) releaseSpec(ctx context.Context, job *v1alpha1.AIJob) 
 	if url == "" {
 		return helmClient.ReleaseSpec{}, permanentError{fmt.Errorf("ClusterRepo %s has no URL", src.RepoName)}
 	}
-	spec := helmClient.ReleaseSpec{Name: job.Name, Namespace: job.Namespace, Version: src.Version, Values: values, TLSConfig: repoTLS}
+	spec := helmClient.ReleaseSpec{Name: job.Name, Namespace: job.Namespace, Version: src.Version, Values: values, TLSConfig: repoTLS,
+		RefuseAdoption: true}
 	if strings.HasPrefix(url, "oci://") {
 		spec.ChartRef = ociChartRef(url, src.ChartName)
 	} else {
@@ -514,6 +587,43 @@ func ociChartRef(url, chart string) string {
 		return url
 	}
 	return url + "/" + chart
+}
+
+// valueSet reports whether the value at path is set to something other than a zero value. A map is
+// set when any value in it is.
+func valueSet(values map[string]interface{}, path []string) bool {
+	var v interface{} = values
+	for _, key := range path {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		if v, ok = m[key]; !ok {
+			return false
+		}
+	}
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case float64:
+		return x != 0
+	case int64:
+		return x != 0
+	case map[string]interface{}:
+		for k := range x {
+			if valueSet(x, []string{k}) {
+				return true
+			}
+		}
+		return false
+	case []interface{}:
+		return len(x) > 0
+	}
+	return true
 }
 
 func (r *AIJobReconciler) chartAllowed(src v1alpha1.AIJobSource) bool {

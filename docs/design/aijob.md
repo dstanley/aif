@@ -405,8 +405,11 @@ The same test at 20,000 records shows where the curve bends.
 - The install identity. Anyone who can create an AIJob can make the
   operator install whatever the chart renders, with the operator's
   permissions, in that namespace. An allow-list of charts
-  (`manager.aijobAllowedCharts`) bounds what can be installed, but the
-  values are still the submitter's. Two ways to close this: install with
+  (`manager.aijobAllowedCharts`) bounds what can be installed, and a
+  deny-list of value paths (`manager.aijobDeniedValues`, by default
+  `network.rdma.enabled` and `network.hostNetwork`) refuses the values that
+  make the pod privileged or share the node. Every other value is still the
+  submitter's. Two ways to close this fully: install with
   an impersonated identity (the creator's, recorded by an admission
   webhook, or a per-namespace service account the project owns), or a
   validating policy on the values a chart accepts.

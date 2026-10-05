@@ -199,9 +199,11 @@ func completion(st *v1alpha1.AIJobStatus, ex *unstructured.Unstructured, pods []
 }
 
 // exitCode is the exit code that explains the outcome: the first failing
-// container, rank 0 first, else rank 0's.
+// container, rank 0 first, else rank 0's. Only each index's latest attempt
+// counts: an earlier failed attempt that a retry overcame does not explain a
+// success.
 func exitCode(pods []corev1.Pod) *int32 {
-	sorted := append([]corev1.Pod(nil), pods...)
+	sorted := latestAttempts(pods)
 	sort.SliceStable(sorted, func(i, j int) bool { return rank(sorted[i]) < rank(sorted[j]) })
 	var first *int32
 	for _, p := range sorted {
@@ -220,6 +222,36 @@ func exitCode(pods []corev1.Pod) *int32 {
 		}
 	}
 	return first
+}
+
+// latestAttempts keeps, for each completion index, only its newest pod: with
+// backoffLimitPerIndex the failed attempts before a retry stay around. Pods
+// without an index (a PyTorchJob's, which restart in place) are all kept.
+func latestAttempts(pods []corev1.Pod) []corev1.Pod {
+	newest := map[string]int{}
+	var out []corev1.Pod
+	for _, p := range pods {
+		idx, ok := p.Annotations[completionIndex]
+		if !ok {
+			idx, ok = p.Labels[completionIndex] // the Job sets both
+		}
+		if !ok {
+			out = append(out, p)
+			continue
+		}
+		if i, seen := newest[idx]; seen {
+			cur := out[i]
+			if p.CreationTimestamp.Before(&cur.CreationTimestamp) ||
+				(p.CreationTimestamp.Equal(&cur.CreationTimestamp) && p.Name < cur.Name) {
+				continue
+			}
+			out[i] = p
+			continue
+		}
+		newest[idx] = len(out)
+		out = append(out, p)
+	}
+	return out
 }
 
 func rank(p corev1.Pod) int {
@@ -345,6 +377,12 @@ func mergePods(st *v1alpha1.AIJobStatus, pods []corev1.Pod) {
 		default:
 			counts.Pending++
 		}
+	}
+	// A pod that finished stays finished, so its count never drops, even if the
+	// pod itself was removed while the Job still runs.
+	if prev := st.PodCounts; prev != nil {
+		counts.Succeeded = max(counts.Succeeded, prev.Succeeded)
+		counts.Failed = max(counts.Failed, prev.Failed)
 	}
 	st.PodCounts = counts
 	st.Pods = failed

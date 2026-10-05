@@ -96,3 +96,16 @@ func TestUpgradeActionOmitsEmptyRepoURL(t *testing.T) {
 		t.Errorf("RepoURL = %q, want empty for an OCI chart ref", up.RepoURL)
 	}
 }
+
+// TestUpgradeActionAdoptsUnlessRefused: the aif-ui release adopts its pre-existing
+// ConfigMap (SUSEAI-1039); a release a namespace user names must not adopt anything.
+func TestUpgradeActionAdoptsUnlessRefused(t *testing.T) {
+	spec := ReleaseSpec{Name: "aif-ui-server", Namespace: "cattle-ui-plugin-system"}
+	if up := newUpgradeAction(&action.Configuration{}, spec); !up.TakeOwnership {
+		t.Error("TakeOwnership = false, want true by default")
+	}
+	spec.RefuseAdoption = true
+	if up := newUpgradeAction(&action.Configuration{}, spec); up.TakeOwnership {
+		t.Error("TakeOwnership = true, want false with RefuseAdoption")
+	}
+}

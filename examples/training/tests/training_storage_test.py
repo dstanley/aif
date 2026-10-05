@@ -141,4 +141,7 @@ if rank == 0:
     merged = [{**c, "ok": all(i < len(cs) and cs[i]["ok"] for cs in allc)} for i, c in enumerate(checks)]
     result = {"test": "Training + Storage Test", "status": "pass" if all(c["ok"] for c in merged) else "fail", "checks": merged, "metrics": metrics, "env": env}
     print("AIF_RESULT " + json.dumps(result), flush=True)
+    if result["status"] != "pass":
+        # a check that failed fails again: ask the chart not to retry (job.failFastExitCodes)
+        open(os.environ.get("AIF_NO_RETRY_FILE", os.devnull), "a").close()
     raise SystemExit(0 if result["status"] == "pass" else 1)

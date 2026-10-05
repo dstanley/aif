@@ -67,12 +67,13 @@ func NewPodLogReader(cfg *rest.Config) (PodLogReader, error) {
 }
 
 // firstWorker is the pod a run reports from: rank 0, which prints the run's own
-// output (the Job's completion index 0, or a PyTorchJob's master).
+// output (the Job's completion index 0, or a PyTorchJob's master), in its latest
+// attempt; an earlier failed attempt's report is not the run's.
 func firstWorker(pods []corev1.Pod) *corev1.Pod {
 	if len(pods) == 0 {
 		return nil
 	}
-	sorted := append([]corev1.Pod(nil), pods...)
+	sorted := latestAttempts(pods)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for i := range sorted {
 		l := sorted[i].Labels
