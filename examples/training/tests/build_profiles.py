@@ -37,6 +37,21 @@ DIAG = {"image": {"repository": "registry.suse.com/bci/bci-base", "tag": "15.7"}
         # the bundle lands on a small volume kept after the run, for download
         "storage": {"checkpointCreate": {"enabled": True, "size": "1Gi", "storageClass": "longhorn", "keep": True}}}
 
+# CPU only: a SUSE BCI Python image, CPU-only PyTorch and transformers installed when the run starts,
+# the test script passed in an environment variable. No GPU, no pull secret: runs on any cluster.
+CPU_INSTALL = ("pip install -q --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 && "
+               "pip install -q --no-cache-dir transformers==4.51.3 && "
+               "printf '%s\\n' \"$TEST_PY\" > /tmp/test.py && exec python3 /tmp/test.py")
+CPU = {"image": {"repository": "registry.suse.com/bci/python", "tag": "3.12"},
+       "gpu": {"mode": "none"},
+       "job": {"kind": "job", "mode": "custom", "nodes": 1, "gpusPerNode": 1, "command": ["sh", "-c", CPU_INSTALL]},
+       "resources": {"requests": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "6Gi"}},
+       "env": ENV + [{"name": "HF_HOME", "value": "/tmp/hf"}, {"name": "PIP_DISABLE_PIP_VERSION_CHECK", "value": "1"},
+                     {"name": "TEST_PY", "value": script("cpu_inference_test.py")}]}
+
+# CPU only, with PyTorch in the image: torchrun on CPUs (Gloo), no GPU, no pull secret.
+TORCH_CPU = {"repository": "pytorch/pytorch", "tag": "2.5.1-cuda12.4-cudnn9-runtime"}
+
 PROFILES = [
     ("12-gpu-smoke", "gpu-smoke", {
         "displayName": "GPU Smoke Test", "purpose": "test", "framework": "CUDA", "status": "ready",
@@ -92,6 +107,18 @@ PROFILES = [
                    "resources": {"requests": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}},
                    "env": [{"name": "DCGM_LEVEL", "value": "1"}]},
         "editable": ["env"], "limits": {"nodes": {"min": 1, "max": 1}, "maxRuntimeHours": 1}}),
+    ("39-cpu-inference-test", "cpu-inference-test", {
+        "displayName": "CPU Inference Test", "purpose": "test", "framework": "PyTorch (CPU)", "status": "beta",
+        "description": "A few minutes on CPUs alone, no GPU: a small instruction model (Qwen2.5-0.5B-Instruct) is downloaded, loaded and answers three questions. Checks that a cluster can take a run end to end; reports load time and tokens per second.",
+        "values": CPU, "editable": ["env"], "limits": {"nodes": {"min": 1, "max": 1}, "maxRuntimeHours": 1}}),
+    ("41-cpu-smoke-test", "cpu-smoke-test", {
+        "displayName": "CPU Smoke Test", "purpose": "test", "framework": "PyTorch (CPU)", "status": "ready",
+        "description": "About a minute on CPUs alone, no GPU: PyTorch, the CPUs and memory the pod is given, a matrix multiply, a training step, a Gloo collective and file I/O. Checks that a cluster can run a PyTorch job on CPUs.",
+        "values": {"image": TORCH_CPU, "gpu": {"mode": "none"},
+                   "job": {"kind": "job", "mode": "torchrun", "nodes": 1, "gpusPerNode": 1, "script": script("cpu_smoke_test.py")},
+                   "rendezvous": {"backend": "c10d"},
+                   "resources": {"requests": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}}, "env": ENV},
+        "editable": ["nodes"], "limits": {"nodes": {"min": 1, "max": 2}, "maxRuntimeHours": 1}}),
 ]
 
 

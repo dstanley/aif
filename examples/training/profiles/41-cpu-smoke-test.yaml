@@ -1,0 +1,193 @@
+# CPU Smoke Test: About a minute on CPUs alone, no GPU: PyTorch, the CPUs and memory the pod is given, a matrix multiply, a training step, a Gloo collective and file I/O. Checks that a cluster can run a PyTorch job on CPUs.
+# Built by ../tests/build_profiles.py from ../tests/; edit the script there and rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpu-smoke-test
+  namespace: ai-profiles
+  labels:
+    trainingjobs/profile: training
+data:
+  profile.yaml: |
+    displayName: CPU Smoke Test
+    purpose: test
+    framework: PyTorch (CPU)
+    status: ready
+    description: 'About a minute on CPUs alone, no GPU: PyTorch, the CPUs and memory the pod is given, a matrix multiply, a training step, a Gloo collective and file I/O. Checks that a cluster can run a PyTorch job on CPUs.'
+    values:
+      image:
+        repository: pytorch/pytorch
+        tag: 2.5.1-cuda12.4-cudnn9-runtime
+      gpu:
+        mode: none
+      job:
+        kind: job
+        mode: torchrun
+        nodes: 1
+        gpusPerNode: 1
+        script: |
+          """CPU Smoke Test: can this cluster run a PyTorch job on CPUs alone?
+
+          About a minute, no GPU: PyTorch imports, the CPUs and memory the pod is given, a matrix multiply,
+          a forward and backward pass, a Gloo collective between the run's processes, and a file written and
+          read back. Prints each check, then one AIF_RESULT line that AI Factory shows as the run's results.
+          Exits non-zero if a check fails."""
+          import json
+          import os
+          import platform
+          import tempfile
+          import time
+
+          import torch
+          import torch.distributed as dist
+
+          checks, metrics, env = [], {}, {}
+
+
+          def check(name, fn):
+              try:
+                  detail = fn() or ""
+                  checks.append({"name": name, "ok": True, "detail": detail})
+                  print(f"PASS  {name}  {detail}", flush=True)
+              except Exception as e:  # a failed check is a result, not a crash
+                  checks.append({"name": name, "ok": False, "detail": str(e)[:300]})
+                  print(f"FAIL  {name}  {e}", flush=True)
+
+
+          def require(cond, msg):
+              if not cond:
+                  raise RuntimeError(msg)
+
+
+          def cgroup_cpus():
+              """The CPUs the container may use: its cgroup quota, else the CPUs it is pinned to."""
+              try:
+                  quota, period = open("/sys/fs/cgroup/cpu.max").read().split()
+                  if quota != "max":
+                      return float(quota) / float(period)
+              except OSError:
+                  pass
+              return float(len(os.sched_getaffinity(0)))
+
+
+          env["node"] = os.environ.get("NODE_NAME") or platform.node()
+          env["python"] = platform.python_version()
+          env["torch"] = torch.__version__
+          env["cuda (torch)"] = "available" if torch.cuda.is_available() else "none"
+
+          cpus = cgroup_cpus()
+          threads = max(1, int(cpus))
+          torch.set_num_threads(threads)
+          check("CPUs", lambda: f"{cpus:g} CPU(s) for this pod; PyTorch uses {threads} thread(s)")
+
+
+          def memory():
+              try:
+                  limit = open("/sys/fs/cgroup/memory.max").read().strip()
+                  return "no limit" if limit == "max" else f"{int(limit) / 2**30:.1f} GiB limit"
+              except OSError:
+                  return "not readable"
+
+
+          check("Memory", memory)
+
+
+          def matmul():
+              n = 1024
+              a, b = torch.randn(n, n), torch.randn(n, n)
+              torch.mm(a, b)  # warm-up
+              t0, steps = time.time(), 0
+              while time.time() - t0 < 3:
+                  torch.mm(a, b)
+                  steps += 1
+              gflops = 2 * n ** 3 * steps / (time.time() - t0) / 1e9
+              metrics["Matmul (GFLOP/s, FP32, 1024x1024)"] = round(gflops, 1)
+              return f"{gflops:.1f} GFLOP/s FP32"
+
+
+          check("Matrix multiply", matmul)
+
+
+          def train_step():
+              torch.manual_seed(0)
+              model = torch.nn.Sequential(torch.nn.Linear(256, 256), torch.nn.ReLU(), torch.nn.Linear(256, 1))
+              opt = torch.optim.SGD(model.parameters(), lr=0.05)
+              x, y = torch.randn(512, 256), torch.randn(512, 1)
+              first = None
+              for _ in range(20):
+                  opt.zero_grad()
+                  loss = torch.nn.functional.mse_loss(model(x), y)
+                  loss.backward()
+                  opt.step()
+                  first = first if first is not None else loss.item()
+              require(loss.item() < first, f"loss did not fall ({first:.3f} -> {loss.item():.3f})")
+              return f"loss {first:.3f} -> {loss.item():.3f} in 20 steps"
+
+
+          check("Forward and backward pass", train_step)
+
+
+          def collective():
+              # torchrun sets the rendezvous; Gloo is PyTorch's CPU backend
+              dist.init_process_group("gloo")
+              world = dist.get_world_size()
+              t = torch.ones(1024 * 1024)
+              t0 = time.time()
+              dist.all_reduce(t)
+              dt = time.time() - t0
+              require(abs(t[0].item() - world) < 1e-6, f"all-reduce gave {t[0].item()}, expected {world}")
+              env["processes"] = world
+              return f"Gloo all-reduce across {world} process(es), 4 MB in {dt * 1000:.0f} ms"
+
+
+          check("Gloo collective", collective)
+
+
+          def files():
+              base = os.environ.get("OUT_DIR") or tempfile.gettempdir()
+              os.makedirs(base, exist_ok=True)
+              data = os.urandom(64 * 2**20)
+              path = os.path.join(base, f"cpu-smoke-{os.getpid()}.bin")
+              t0 = time.time()
+              with open(path, "wb") as f:
+                  f.write(data)
+                  f.flush()
+                  os.fsync(f.fileno())
+              wrote = time.time() - t0
+              with open(path, "rb") as f:
+                  back = f.read()
+              os.remove(path)
+              require(back == data, "the file read back differs")
+              metrics["Write (MB/s, 64 MB with fsync)"] = round(64 / max(wrote, 1e-6), 1)
+              return f"64 MB written and read back in {base}"
+
+
+          check("File write and read", files)
+
+          if dist.is_initialized():
+              dist.destroy_process_group()
+
+          result = {"test": "CPU Smoke Test", "status": "pass" if all(c["ok"] for c in checks) else "fail", "checks": checks, "metrics": metrics, "env": env}
+          if os.environ.get("RANK", "0") == "0":
+              print("AIF_RESULT " + json.dumps(result), flush=True)
+          if result["status"] != "pass":
+              # a check that failed fails again: ask the chart not to retry (job.failFastExitCodes)
+              open(os.environ.get("AIF_NO_RETRY_FILE", os.devnull), "a").close()
+          raise SystemExit(0 if result["status"] == "pass" else 1)
+      rendezvous:
+        backend: c10d
+      resources:
+        requests:
+          cpu: '2'
+          memory: 2Gi
+          ephemeral-storage: 1Gi
+      env:
+      - name: PYTHONUNBUFFERED
+        value: '1'
+    editable:
+    - nodes
+    limits:
+      nodes:
+        min: 1
+        max: 2
+      maxRuntimeHours: 1

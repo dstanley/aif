@@ -1,0 +1,33 @@
+# One worker on CPUs, no GPU: data preparation, preprocessing and small experiments. PyTorch's own
+# image (torch on CPUs; its CUDA libraries go unused), torchrun with the Gloo backend; your script
+# or ConfigMap, or the chart's built-in demo. No pull secret: runs on any cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpu-job
+  namespace: ai-profiles
+  labels:
+    trainingjobs/profile: training
+data:
+  profile.yaml: |
+    displayName: CPU Job
+    description: A job on CPUs, no GPU, for data preparation, preprocessing and small experiments. Bring a script, or run the built-in check. Stopped after 4 hours.
+    framework: PyTorch (CPU)
+    status: ready
+    values:
+      image: { repository: pytorch/pytorch, tag: 2.5.1-cuda12.4-cudnn9-runtime }
+      gpu: { mode: none }
+      job: { kind: job, mode: torchrun, nodes: 1, gpusPerNode: 1 }
+      rendezvous: { backend: c10d }
+      resources:
+        requests: { cpu: "2", memory: 4Gi, ephemeral-storage: 5Gi }
+      storage: { scratchSize: 10Gi }
+      env:
+        - { name: PYTHONUNBUFFERED, value: "1" }
+        - { name: OUT_DIR, value: /scratch/out }
+        - { name: MATMUL_N, value: "1024" }
+    editable: [image, tag, script, configMap, args, env, nodes, datasetPVC, checkpointPVC, runtimeLimitHours]
+    limits:
+      nodes: { min: 1, max: 2 }
+      registries: [pytorch/, registry.suse.com/bci/, dp.apps.rancher.io/containers/]
+      maxRuntimeHours: 4
