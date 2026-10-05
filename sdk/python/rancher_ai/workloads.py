@@ -75,6 +75,9 @@ class TrainingRun:
     id: str = ""
     # the result the run's AIJob kept when it finished (status.report), which outlives its pods
     report: dict | None = field(default=None, repr=False)
+    # the Rancher cluster it runs on: its ID ("local" for this one) and its name
+    cluster: str = "local"
+    cluster_name: str = ""
 
     def __repr__(self) -> str:
         return f"<TrainingRun name={self.name!r} id={self.id!r} state={self.state!r}>"
@@ -107,6 +110,9 @@ class TrainingRun:
         """Logs of one rank (default rank 0). follow=True streams until the pod ends. The GPU-sharing
         runtime's own informational lines (HAMi-core "Msg") are left out unless runtime_messages;
         its errors (e.g. an allocation refused at the cap) are always kept."""
+        if self.cluster != "local":
+            raise RuntimeError(f"{self.name} runs on cluster {self.cluster}: its logs are there (Rancher: that cluster's "
+                               "pods); result() has its report once it finishes")
         pods = sorted(self.pods(), key=lambda p: int((p.metadata.annotations or {}).get("batch.kubernetes.io/job-completion-index", 0)))
         pod = next((p for p in pods if int((p.metadata.annotations or {}).get("batch.kubernetes.io/job-completion-index", -1)) == rank), None)
         if not pod:
@@ -172,13 +178,30 @@ class TrainingRun:
         return RunStatus(self)._repr_html_()
 
 
+def _cluster_name(c, cid: str) -> str:
+    """A remote run's cluster name; the local one needs none."""
+    if cid == "local":
+        return ""
+    try:
+        from .client import _clusters
+        return _clusters(c).get(cid, "")
+    except Exception:
+        return ""
+
+
+def _cluster_label(run) -> str:
+    cid = getattr(run, "cluster", "local") or "local"
+    name = getattr(run, "cluster_name", "") or ""
+    return f"{name} ({cid})" if name and name != cid else cid
+
+
 class RunStatus:
     """A snapshot of a run: printed as text, rendered as a card in a notebook."""
 
     def __init__(self, run: TrainingRun):
         self.run = run
         self.rows = [
-            ("Profile", run.profile or "-"), ("Project", run.namespace),
+            ("Profile", run.profile or "-"), ("Project", run.namespace), ("Cluster", _cluster_label(run)),
             ("Workers", f"{run.ready} / {run.workers} {'done' if run.state == 'Completed' else 'ready'}"),
             ("GPU allocation", run.gpus or "-"), ("Queue", run.queue or "-"), ("Image", run.image),
             ("Created", run.created), ("Dashboard", run.dashboard or "-"),
@@ -368,6 +391,7 @@ def training_runs(c: "Client", namespace: str | None = None) -> list[TrainingRun
             by_key[key].profile = by_key[key].profile or spec.get("profile", "")
             by_key[key].report = st.get("report")
             continue
+        where = st.get("cluster") or spec.get("targetCluster") or "local"
         v = spec.get("values") or {}
         img = v.get("image") or {}
         share = int((v.get("gpu") or {}).get("sharedMemoryMiB") or 0)
@@ -379,7 +403,7 @@ def training_runs(c: "Client", namespace: str | None = None) -> list[TrainingRun
             queue=((st.get("queue") or {}).get("kaiQueue") or (st.get("queue") or {}).get("localQueue") or (v.get("scheduler") or {}).get("queue", "")),
             image=f"{img.get('repository', '')}:{img.get('tag', '')}" if img.get("repository") else "",
             created=_ts(md.get("creationTimestamp")), id=f"run-{(md.get('uid') or '')[:8]}",
-            report=st.get("report"),
+            report=st.get("report"), cluster=where, cluster_name=_cluster_name(c, where),
         ))
         by_key[key] = out[-1]
     # Releases whose Job is gone (ttlSecondsAfterFinished): finished, kept so they can be seen and removed.

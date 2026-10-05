@@ -132,13 +132,39 @@ class Profiles:
         return t
 
 
+def _clusters(c: "Client") -> dict[str, str]:
+    """Rancher cluster IDs to their names, from the management cluster; cached on the client."""
+    if getattr(c, "_cluster_names", None) is None:
+        items = c.conn.list_custom("management.cattle.io", "v3", "clusters")
+        c._cluster_names = {i["metadata"]["name"]: (i.get("spec") or {}).get("displayName") or i["metadata"]["name"] for i in items}
+    return c._cluster_names
+
+
+def _cluster_id(c: "Client", name_or_id: str) -> str:
+    """A cluster's ID from its name or ID. Rancher identifies a cluster by its ID (c-xxxxx), which never
+    changes; people know it by its name, which can change and need not be unique."""
+    known = _clusters(c)
+    if name_or_id in known or name_or_id == "local":
+        return name_or_id
+    ids = [i for i, n in known.items() if n == name_or_id]
+    if len(ids) == 1:
+        return ids[0]
+    if len(ids) > 1:
+        raise ProfileError(f"more than one cluster is named {name_or_id!r} ({', '.join(ids)}): give its ID")
+    if not known and name_or_id.startswith("c-"):
+        return name_or_id  # the clusters cannot be listed with these rights; an ID is taken as it is
+    raise ProfileError(f"no cluster named or with ID {name_or_id!r}" + (f"; clusters: {', '.join(f'{n} ({i})' for i, n in known.items())}" if known else ""))
+
+
 class Runs:
     def __init__(self, c: Client):
         self.c = c
 
     def create(self, profile: str, project: str | None = None, name: str | None = None, wait_for_job: float = 60,
-               dry_run: bool = False, demo: bool = False, **fields: Any) -> workloads.TrainingRun | dict:
-        """Start a training run from a training profile. Fields are the ones the profile opens:
+               dry_run: bool = False, demo: bool = False, cluster: str | None = None, **fields: Any) -> workloads.TrainingRun | dict:
+        """Start a training run from a training profile. cluster= runs it on another Rancher-managed cluster
+        (its name, or its Rancher ID, c-xxxxx): the operator installs it there into a namespace of the project's name,
+        and the run's record stays here. Fields are the ones the profile opens:
         image ("repo:tag"), workers, gpus_per_worker, command, args, script, env (dict), dataset, checkpoints,
         config_map, gpu_type, gpu_memory (GiB, shared GPU), runtime_hours, priority_class. When the
         profile lets you supply code, pass script= or config_map=, or demo=True for the chart's built-in
@@ -169,12 +195,20 @@ class Runs:
             warnings.warn(f"the image has PyTorch only (no pip): the script imports {', '.join(missing)} and will fail on its "
                           "first import; use an image built from dp.apps.rancher.io/containers/pytorch with them added, "
                           "or one that ships them (e.g. nvcr.io/nvidia/pytorch)", stacklevel=2)
-        values = install.complete(self.c.conn, values, ns, p.name)
+        if cluster:
+            cluster = _cluster_id(self.c, cluster)
+        remote = bool(cluster) and cluster != "local"
+        if remote and not isinstance(self.c.installer, install.AIJobInstaller):
+            raise ProfileError("a run on another cluster needs the AI Factory operator's AIJob API on this cluster")
+        values = install.complete_remote(values, p.name, cluster) if remote else install.complete(self.c.conn, values, ns, p.name)
         if dry_run:
             return values
         if self._exists(ns, name):
             raise ProfileError(f"{name} already exists in {ns}; choose another name")
-        self.c.installer.install(ns, name, values, p.name)
+        if remote:
+            self.c.installer.install(ns, name, values, p.name, cluster=cluster)
+        else:
+            self.c.installer.install(ns, name, values, p.name)
         end = time.time() + wait_for_job
         while True:
             try:

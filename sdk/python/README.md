@@ -115,6 +115,28 @@ GPU Diagnostics Bundle: PASS
 
 A warning passes but is worth knowing; any failed check fails the result, and `run result` exits 1.
 
+### Runs on other clusters
+
+Where the AI Factory operator is configured to reach other Rancher-managed clusters (chart values
+`manager.aijobRemoteClusters`), a run can go to one of them by its name in Rancher, or by its
+cluster ID (`c-xxxxx`), which a name shared by two clusters needs:
+
+```console
+$ rancher-ai -p team-a run create --profile cpu-inference-test --cluster gpu-east --wait
+```
+
+```python
+run = ai.runs.create(profile="cpu-inference-test", cluster="gpu-east")
+run.wait(); run.result()
+```
+
+The run's record keeps the cluster's ID, so renaming the cluster does not move it. The operator
+installs the run there, through Rancher, into a namespace with the project's name,
+which must exist on that cluster; the run's record (its AIJob) stays here, so `run list`, `run wait`
+and `run result` work as usual. The scheduler is the profile's own or the cluster's default: this
+cluster's project queue says nothing about the other one. Logs are on the other cluster (Rancher shows
+that cluster's pods); `result()` returns the run's report once it finishes.
+
 ### Reporting a result from your own script
 
 Any run can report a result the same way: its script prints one line that starts with `AIF_RESULT `

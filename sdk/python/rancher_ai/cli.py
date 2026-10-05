@@ -84,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     rc.add_argument("--gpu-type", dest="gpu_type")
     rc.add_argument("--gpu-memory", type=float, dest="gpu_memory", help="GiB per pod on a shared GPU")
     rc.add_argument("--runtime-hours", type=float, dest="runtime_hours")
+    rc.add_argument("--cluster", help="run it on another Rancher-managed cluster: its name, or its Rancher ID (c-xxxxx)")
     rc.add_argument("--demo", action="store_true", help="run the chart's built-in all-reduce check instead of your code")
     rc.add_argument("--dry-run", action="store_true", help="print the Helm values and stop")
     rc.add_argument("--wait", action="store_true", help="wait until the run completes or fails")
@@ -170,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             fields["env"] = _env_pairs(a.env)
             if a.script:
                 fields["script"] = open(a.script).read()
-            r = ai.runs.create(a.profile, name=a.name, dry_run=a.dry_run, demo=a.demo, **fields)
+            r = ai.runs.create(a.profile, name=a.name, dry_run=a.dry_run, demo=a.demo, cluster=a.cluster, **fields)
             if a.dry_run:
                 print(yaml.safe_dump(r, sort_keys=False, allow_unicode=True), end="")
                 return 0

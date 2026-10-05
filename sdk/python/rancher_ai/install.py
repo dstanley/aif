@@ -59,6 +59,22 @@ def shared_claim(conn: Connection, namespace: str) -> str:
     return ""
 
 
+def complete_remote(values: dict, profile_name: str, cluster: str) -> dict:
+    """complete() for a run on another cluster: this cluster's project, queue and shared GPU say nothing
+    about that one. The scheduler is the profile's own, or the default scheduler."""
+    values = json.loads(json.dumps(values))
+    sched = values.setdefault("scheduler", {})
+    if not sched.get("type"):
+        sched.update({"type": "none", "queue": ""})
+    gpu = values.setdefault("gpu", {})
+    if int(gpu.get("sharedMemoryMiB") or 0) > 0 and sched.get("type") not in ("kai", "runai"):
+        raise RuntimeError(f"the profile shares a GPU; on cluster {cluster} that needs the profile to name the "
+                           "GPU-sharing scheduler (scheduler.type kai, with its queue)")
+    values["profile"] = profile_name
+    values.setdefault("preflight", {})["checkHeadroom"] = False
+    return values
+
+
 def complete(conn: Connection, values: dict, namespace: str, profile_name: str) -> dict:
     """Fill in what the profile leaves to the project: scheduler and queue, the shared GPU claim, the
     profile label, and the headroom lookup (which needs cluster-wide pod reads)."""
@@ -268,7 +284,7 @@ def oci_tags(ref: str, insecure: bool = False, timeout: float = 20) -> list[str]
     return [t.replace("_", "+") for t in get(api, {"Authorization": f"Bearer {bearer}"}).get("tags") or []]
 
 
-def aijob_for(namespace: str, name: str, values: dict, profile: str, version: str) -> dict:
+def aijob_for(namespace: str, name: str, values: dict, profile: str, version: str, cluster: str = "") -> dict:
     """The AIJob for a run. Under an operator a chart's install-time capacity check is advice, not a
     gate: a busy cluster should queue the job, not fail it. The other pre-flight checks stay on."""
     v = dict(values or {})
@@ -276,6 +292,8 @@ def aijob_for(namespace: str, name: str, values: dict, profile: str, version: st
     spec = {"category": "training", "source": {"repoName": CHART_REPO, "chartName": CHART_NAME, "version": version}, "values": v}
     if profile:
         spec["profile"] = profile
+    if cluster and cluster != "local":
+        spec["targetCluster"] = cluster  # the operator installs it there, through Rancher
     return {"apiVersion": f"{AIJOB[0]}/{AIJOB[1]}", "kind": "AIJob", "metadata": {"name": name, "namespace": namespace}, "spec": spec}
 
 
@@ -285,8 +303,8 @@ class AIJobInstaller:
     def __init__(self, conn: Connection):
         self.conn = conn
 
-    def install(self, namespace: str, name: str, values: dict, profile: str) -> dict:
-        job = aijob_for(namespace, name, values, profile, chart_version(self.conn))
+    def install(self, namespace: str, name: str, values: dict, profile: str, cluster: str = "") -> dict:
+        job = aijob_for(namespace, name, values, profile, chart_version(self.conn), cluster)
         self.conn.custom.create_namespaced_custom_object(AIJOB[0], AIJOB[1], namespace, AIJOB[2], job)
         return {"aijob": name, "namespace": namespace}
 
