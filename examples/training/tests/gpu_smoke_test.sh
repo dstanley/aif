@@ -19,4 +19,5 @@ else
 fi
 $ok && st=pass || st=fail
 echo "AIF_RESULT {\"test\":\"GPU Smoke Test\",\"status\":\"$st\",\"checks\":[$checks],\"metrics\":{},\"env\":$env}"
-$ok
+# a check that failed fails again: exit 3 fails the run without a retry (job.failFastExitCodes)
+$ok || exit 3

@@ -48,6 +48,7 @@ import (
 	aijobctrl "github.com/SUSE/aif-operator/internal/controller/aijob"
 	aiworkloadctrl "github.com/SUSE/aif-operator/internal/controller/aiworkload"
 	aiextensionctrl "github.com/SUSE/aif-operator/internal/controller/installaiextension"
+	projectsecretsctrl "github.com/SUSE/aif-operator/internal/controller/projectsecrets"
 	settingsctrl "github.com/SUSE/aif-operator/internal/controller/settings"
 	"github.com/SUSE/aif-operator/internal/infra/rancher"
 	// +kubebuilder:scaffold:imports
@@ -226,15 +227,20 @@ func main() {
 			"extension chart pulls, e.g. \"harbor.example.com,ghcr.io\". Empty (default) allows all hosts.")
 	var apiBindAddr string
 	flag.StringVar(&apiBindAddr, "api-bind-address", ":8080", "The address the operator API binds to.")
-	var aijobAllowedCharts, aijobRepoURLOverrides, onlyControllers string
+	var aijobAllowedCharts, aijobDeniedValues, aijobRepoURLOverrides, onlyControllers string
 	flag.StringVar(&aijobAllowedCharts, "aijob-allowed-charts", "",
 		"Comma-separated <clusterRepo>/<chart> (or <clusterRepo>/*) that an AIJob may install. AIJobs are "+
 			"installed with the operator's service account, so set this to bound them. Empty (default) allows all.")
+	flag.StringVar(&aijobDeniedValues, "aijob-denied-values", "",
+		"Comma-separated dotted chart-value paths an AIJob may not set (to anything but false, \"\", 0 or null), "+
+			"e.g. \"network.rdma.enabled,network.hostNetwork\": values that make the pod privileged or share the node. "+
+			"Empty (default) allows all.")
 	flag.StringVar(&aijobRepoURLOverrides, "aijob-repo-url-overrides", "",
 		"Development only: comma-separated <clusterRepo>=<url> used instead of the ClusterRepo's spec.url, for "+
 			"running the operator outside the cluster where an in-cluster repository Service does not resolve.")
 	flag.StringVar(&onlyControllers, "controllers", "",
-		"Development only: comma-separated controllers to run (installaiextension, settings, aiworkload, aijob). "+
+		"Development only: comma-separated controllers to run (installaiextension, settings, aiworkload, aijob, "+
+			"projectsecrets). "+
 			"Empty (default) runs all of them.")
 	opts := zap.Options{
 		Development: true,
@@ -395,6 +401,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if enabled("projectsecrets") {
+		if err := (&projectsecretsctrl.Reconciler{
+			Client:            mgr.GetClient(),
+			SecretName:        aiworkloadctrl.CombinedPullSecretName,
+			OperatorNamespace: operatorNamespace,
+			DockerConfig: func(ctx context.Context) ([]byte, error) {
+				return aiworkloadctrl.SUSECombinedDockerConfig(ctx, mgr.GetClient(), operatorNamespace)
+			},
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ProjectSecrets")
+			os.Exit(1)
+		}
+	}
 	if enabled("aijob") {
 		var allowedCharts []string
 		for _, c := range strings.Split(aijobAllowedCharts, ",") {
@@ -405,6 +424,12 @@ func main() {
 		if len(allowedCharts) == 0 {
 			setupLog.Info("WARNING: --aijob-allowed-charts is empty (allow-all): an AIJob can install any chart " +
 				"from any ClusterRepo with the operator's service account.")
+		}
+		var deniedValues []string
+		for _, p := range strings.Split(aijobDeniedValues, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				deniedValues = append(deniedValues, p)
+			}
 		}
 		overrides := map[string]string{}
 		for _, kv := range strings.Split(aijobRepoURLOverrides, ",") {
@@ -417,6 +442,7 @@ func main() {
 			Scheme:                   mgr.GetScheme(),
 			Recorder:                 mgr.GetEventRecorderFor("aijob-controller"),
 			AllowedCharts:            allowedCharts,
+			DeniedValues:             deniedValues,
 			RepoURLOverrides:         overrides,
 			AllowInsecureRegistryTLS: allowInsecureRegistryTLS,
 		}).SetupWithManager(mgr); err != nil {

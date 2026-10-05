@@ -157,3 +157,12 @@ func TestOnlyAPodTheExecutionCreatedReports(t *testing.T) {
 func TestNoExecutionNoReport(t *testing.T) {
 	assert.Nil(t, ownedBy(nil, []corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "x"}}}))
 }
+
+func TestTheFirstWorkersLatestAttemptReports(t *testing.T) {
+	at := func(name string, created time.Duration) corev1.Pod {
+		return corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, CreationTimestamp: metav1.NewTime(t0.Add(created)),
+			Labels: map[string]string{"batch.kubernetes.io/job-completion-index": "0"}}}
+	}
+	// the failed first attempt's name sorts first; the newer retry is the one that decided the run
+	assert.Equal(t, "run-0-xyz", firstWorker([]corev1.Pod{at("run-0-abc", 0), at("run-0-xyz", time.Minute)}).Name)
+}

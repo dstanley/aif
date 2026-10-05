@@ -192,6 +192,8 @@
         "args": { "type": "array", "default": ["--leader-elect"] },
         "allowInsecureRegistryTLS": { "type": "boolean", "default": false, "description": "Allow InstallAIExtension tls.insecureSkipVerify (disables registry TLS verification for the chart pull). Off by default; test/eval only." },
         "allowedRegistryHosts": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Allowlist of registry hosts the operator may contact (and send credentials to) for extension chart pulls. Empty allows all hosts." },
+        "aijobAllowedCharts": { "type": "array", "items": { "type": "string" }, "description": "Charts an AIJob may install, as <clusterRepo>/<chart> or <clusterRepo>/*. Empty allows any chart." },
+        "aijobDeniedValues": { "type": "array", "items": { "type": "string" }, "description": "Dotted chart-value paths an AIJob may not set to anything but false, \"\", 0 or null. Empty allows any." },
         "env": { "type": "array", "default": [] },
         "podAnnotations": { "type": "object", "default": {} },
         "podSecurityContext": { "type": "object" },
@@ -404,6 +406,9 @@
         }
       }
     },
+    "rancherReadinessCheck": { "type": "object", "properties": { "enabled": { "type": "boolean", "default": true } } },
+    "trainingProfiles": { "type": "object", "properties": { "install": { "type": "boolean", "default": false } } },
+    "aiClusters": { "type": "object", "properties": { "enabled": { "type": "boolean", "default": false }, "agent": { "type": "object", "properties": { "chart": { "type": "string" }, "version": { "type": "string" } } } } },
     "crds": {
       "type": "object",
       "additionalProperties": false,

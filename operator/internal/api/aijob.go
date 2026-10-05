@@ -17,16 +17,16 @@ limitations under the License.
 package api
 
 import (
-	"fmt"
 	"net/http"
 
 	aiplatformv1alpha1 "github.com/SUSE/aif-operator/api/v1alpha1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// AIJobHandler serves the AIJob records the Workloads page lists: list,
-// cancel and delete. Creating an AIJob is a separate change.
+// AIJobHandler lists AIJob records. It answers with the operator's service
+// account, not the caller's, so it leaves out spec.values (which can carry
+// credentials) and offers no writes: the UI and SDK create, cancel and delete
+// AIJobs through the Kubernetes API, where the user's own RBAC applies.
 type AIJobHandler struct {
 	client client.Client
 }
@@ -39,8 +39,6 @@ func NewAIJobHandler(c client.Client) *AIJobHandler {
 // Register wires the handler's routes onto the mux.
 func (h *AIJobHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/aijobs", h.listAIJobs)
-	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/aijobs/{name}/cancel", h.cancelAIJob)
-	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/aijobs/{name}", h.deleteAIJob)
 }
 
 func (h *AIJobHandler) listAIJobs(w http.ResponseWriter, r *http.Request) {
@@ -51,58 +49,13 @@ func (h *AIJobHandler) listAIJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range list.Items {
 		list.Items[i].ManagedFields = nil
+		list.Items[i].Spec.Values = nil
 		// The client strips TypeMeta from list items; restore it so consumers
 		// (the UI's YAML view) get a self-describing object.
 		list.Items[i].APIVersion = aiplatformv1alpha1.GroupVersion.String()
 		list.Items[i].Kind = "AIJob"
 	}
 	writeJSON(w, http.StatusOK, &list)
-}
-
-// cancelAIJob sets spec.cancel. The controller uninstalls the release and the
-// job ends Cancelled; a job that already finished is left as it is.
-func (h *AIJobHandler) cancelAIJob(w http.ResponseWriter, r *http.Request) {
-	namespace, name := r.PathValue("namespace"), r.PathValue("name")
-	job := &aiplatformv1alpha1.AIJob{}
-	if err := h.client.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: name}, job); err != nil {
-		if errors.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, fmt.Errorf("%w: job %q not found in namespace %q", ErrNotFound, name, namespace))
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if job.Status.Phase.IsTerminal() {
-		writeError(w, http.StatusConflict, fmt.Errorf("%w: job %q has already finished (%s)", ErrConflict, name, job.Status.Phase))
-		return
-	}
-	if job.Spec.Cancel {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
-		return
-	}
-	patch := client.MergeFrom(job.DeepCopy())
-	job.Spec.Cancel = true
-	if err := h.client.Patch(r.Context(), job, patch); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
-}
-
-// deleteAIJob deletes the record. The controller's finalizer uninstalls the
-// release first, so deleting a job also removes what it is running.
-func (h *AIJobHandler) deleteAIJob(w http.ResponseWriter, r *http.Request) {
-	job := &aiplatformv1alpha1.AIJob{}
-	job.Name, job.Namespace = r.PathValue("name"), r.PathValue("namespace")
-	if err := h.client.Delete(r.Context(), job); err != nil {
-		if errors.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, fmt.Errorf("%w: job %q not found in namespace %q", ErrNotFound, job.Name, job.Namespace))
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // Compile-time guard.

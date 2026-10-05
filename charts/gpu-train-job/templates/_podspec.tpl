@@ -330,7 +330,7 @@ The trainer container, shared by both kinds. Takes a dict: "ctx" (root context) 
       --rdzv_endpoint="$RDZV_ENDPOINT" --rdzv_id="$JOB_NAME"
       {{ $script }} "$@" & pid=$!;
       trap 'kill -TERM $pid 2>/dev/null' TERM INT;
-      wait $pid; rc=$?; [ $rc -gt 128 ] && wait $pid && rc=$?;
+      wait $pid; rc=$?; if [ $rc -gt 128 ]; then wait $pid; rc=$?; fi;
       if [ -e "$AIF_NO_RETRY_FILE" ]; then exit 3; fi; exit $rc
     {{- end }}
     - --

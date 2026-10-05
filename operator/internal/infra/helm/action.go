@@ -65,8 +65,9 @@ func (c *helmClient) install(
 	// invariant: the chart comes from the CR (spec.source.helm.chartURL, or
 	// spec.extension.name for the ClusterRepo path). Accepted deliberately; the
 	// narrower alternative, stamping ownership metadata onto the one ConfigMap
-	// ahead of the install, is what this replaced.
-	install.TakeOwnership = true
+	// ahead of the install, is what this replaced. A caller whose release name a
+	// namespace user chooses opts out with RefuseAdoption.
+	install.TakeOwnership = !spec.RefuseAdoption
 	if spec.RepoURL != "" {
 		install.RepoURL = spec.RepoURL
 	}
@@ -149,7 +150,7 @@ func newUpgradeAction(cfg *action.Configuration, spec ReleaseSpec) *action.Upgra
 	up.Timeout = 10 * time.Minute
 	// See install's TakeOwnership comment (SUSEAI-1039) — the same adoption gap
 	// applies on upgrade.
-	up.TakeOwnership = true
+	up.TakeOwnership = !spec.RefuseAdoption
 
 	return up
 }
@@ -212,7 +213,7 @@ func (c *helmClient) renderUpgrade(
 	// (SUSEAI-1039) — this is the pre-flight diff EnsureRelease uses to decide
 	// whether an upgrade is even needed, so without it the real upgrade below
 	// would never be reached at all.
-	up.TakeOwnership = true
+	up.TakeOwnership = !spec.RefuseAdoption
 	if spec.RepoURL != "" {
 		up.RepoURL = spec.RepoURL
 	}

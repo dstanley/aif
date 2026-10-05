@@ -924,6 +924,19 @@ func (r *AIWorkloadReconciler) buildSUSECombinedDockerConfig(ctx context.Context
 	return cfg, nil
 }
 
+// SUSECombinedDockerConfig is the combined dockerconfigjson for every registry Settings has
+// credentials for (SUSE Application Collection, SUSE Registry, NVIDIA NGC), or nil when none are
+// configured. For other controllers that hand the same credentials out, such as the project
+// secrets Rancher copies into an AI project's namespaces.
+func SUSECombinedDockerConfig(ctx context.Context, c client.Client, operatorNamespace string) ([]byte, error) {
+	r := &AIWorkloadReconciler{Client: c, OperatorNamespace: operatorNamespace}
+	return r.buildSUSECombinedDockerConfig(ctx)
+}
+
+// CombinedPullSecretName is the pull secret's name wherever the operator delivers it; profiles and
+// blueprints refer to it by this name.
+const CombinedPullSecretName = combinedPullSecretName
+
 // ensureNamespace makes sure the namespace exists. It uses Server-Side Apply
 // (a write that bypasses the client cache) rather than a cached Get: the
 // operator is not granted list/watch on namespaces, so a cached read would

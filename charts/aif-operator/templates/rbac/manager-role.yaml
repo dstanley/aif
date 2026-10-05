@@ -80,6 +80,16 @@ rules:
       - get
       - list
       - watch
+  # Rancher projects: the AI projects whose backing namespace receives the registry pull secret,
+  # which Rancher then copies into the project's namespaces (project-scoped secret).
+  - apiGroups:
+      - management.cattle.io
+    resources:
+      - projects
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:
@@ -407,8 +417,9 @@ rules:
       - update
       - watch
 
+{{- if .Values.aiExtension.enabled }}
 ---
-
+# The UI extension's namespace exists only where Rancher serves extensions (its local cluster).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -490,3 +501,4 @@ rules:
       - get
       - patch
       - update
+{{- end }}

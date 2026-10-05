@@ -55,4 +55,7 @@ if rank == 0:
            "nccl": ".".join(map(str, torch.cuda.nccl.version()))}
     result = {"test": "NCCL Fabric Benchmark", "status": "pass" if all(c["ok"] for c in checks) else "fail", "checks": checks, "metrics": metrics, "env": env}
     print("AIF_RESULT " + json.dumps(result), flush=True)
+    if result["status"] != "pass":
+        # a check that failed fails again: ask the chart not to retry (job.failFastExitCodes)
+        open(os.environ.get("AIF_NO_RETRY_FILE", os.devnull), "a").close()
     raise SystemExit(0 if result["status"] == "pass" else 1)

@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	aiplatformv1alpha1 "github.com/SUSE/aif-operator/api/v1alpha1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -88,54 +90,39 @@ func TestListAIJobs_ItemsCarryTypeMeta(t *testing.T) {
 	}
 }
 
-func TestCancelAIJob_SetsCancel(t *testing.T) {
-	h, c := newAIJobHandler(t, aiJob("train-1", aiplatformv1alpha1.AIJobPhaseQueued))
+func TestListAIJobs_LeavesOutValues(t *testing.T) {
+	job := aiJob("train-1", aiplatformv1alpha1.AIJobPhaseRunning)
+	job.Spec.Values = &apiextensionsv1.JSON{Raw: []byte(`{"env":{"HF_TOKEN":"secret"}}`)}
+	h, _ := newAIJobHandler(t, job)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/namespaces/team-a/aijobs/train-1/cancel", nil))
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/aijobs", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "HF_TOKEN") || strings.Contains(w.Body.String(), `"values"`) {
+		t.Errorf("spec.values must not be served with the operator's identity: %s", w.Body.String())
+	}
+}
+
+// The API acts as the operator, not the caller, so it offers no writes: cancel and delete go through
+// the Kubernetes API with the user's own RBAC.
+func TestAIJobWritesAreNotServed(t *testing.T) {
+	h, c := newAIJobHandler(t, aiJob("train-1", aiplatformv1alpha1.AIJobPhaseRunning))
+	for _, req := range []*http.Request{
+		httptest.NewRequest("POST", "/api/v1/namespaces/team-a/aijobs/train-1/cancel", nil),
+		httptest.NewRequest("DELETE", "/api/v1/namespaces/team-a/aijobs/train-1", nil),
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code < 400 {
+			t.Errorf("%s %s: expected an error status, got %d", req.Method, req.URL.Path, w.Code)
+		}
 	}
 	got := &aiplatformv1alpha1.AIJob{}
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "train-1"}, got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Spec.Cancel {
-		t.Error("spec.cancel was not set")
-	}
-}
-
-func TestCancelAIJob_FinishedJobIsAConflict(t *testing.T) {
-	h, _ := newAIJobHandler(t, aiJob("train-1", aiplatformv1alpha1.AIJobPhaseSucceeded))
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/namespaces/team-a/aijobs/train-1/cancel", nil))
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestCancelAIJob_NotFound(t *testing.T) {
-	h, _ := newAIJobHandler(t)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/namespaces/team-a/aijobs/missing/cancel", nil))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestDeleteAIJob(t *testing.T) {
-	h, c := newAIJobHandler(t, aiJob("train-1", aiplatformv1alpha1.AIJobPhaseFailed))
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("DELETE", "/api/v1/namespaces/team-a/aijobs/train-1", nil))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
-	}
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "train-1"}, &aiplatformv1alpha1.AIJob{}); err == nil {
-		t.Error("job still exists")
-	}
-
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("DELETE", "/api/v1/namespaces/team-a/aijobs/train-1", nil))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("second delete: expected 404, got %d", w.Code)
+	if got.Spec.Cancel {
+		t.Error("spec.cancel was set")
 	}
 }

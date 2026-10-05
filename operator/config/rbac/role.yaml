@@ -239,6 +239,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - management.cattle.io
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - rbac.authorization.k8s.io
   resources:
   - rolebindings

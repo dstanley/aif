@@ -142,6 +142,15 @@ manager:
   aijobAllowedCharts:
     - gpu-train-charts/gpu-train-job
 
+  # aijobDeniedValues lists dotted chart-value paths an AIJob may not set to anything
+  # but false, "", 0 or null. The allow-list above bounds the chart, not its values,
+  # and these make the pod privileged (RDMA mounts the verbs devices) or share the
+  # node's network. Clear the list ([]) on a cluster whose AIJob users may run RDMA
+  # training; restricting who may create AIJobs then does the bounding.
+  aijobDeniedValues:
+    - network.rdma.enabled
+    - network.hostNetwork
+
   env: []
 
   podAnnotations: {}
@@ -264,6 +273,30 @@ aiExtension:
 # version. The operator's allow-list, the training pages and the SDK find it in the ClusterRepo
 # named here. Set create to false to manage that ClusterRepo yourself, e.g. pointing at a mirror;
 # an existing ClusterRepo of that name is never replaced.
+# The pre-install/pre-upgrade Job that waits for Rancher's server CRDs (Fleet, catalog, UI plugins)
+# before the operator starts. Off where those never appear: a downstream cluster running only the
+# training agent (see aiClusters).
+rancherReadinessCheck:
+  enabled: true
+
+# The default training and test profiles (ConfigMaps in ai-profiles, readable by every
+# authenticated user): what a cluster's Catalog offers when nobody has written profiles yet. The
+# training agent AI Factory installs on an AI-enabled cluster turns this on.
+trainingProfiles:
+  install: false
+
+# AI-enabled clusters. AI Factory installs its training agent (this chart, running only the AIJob
+# controller, with the training chart repository and the default profiles) on every downstream
+# cluster labelled ai-factory.suse.com/enabled=true, through one Fleet HelmOp. The Clusters page's
+# Enable AI sets the label. The agent's chart is this operator chart, from an OCI registry.
+aiClusters:
+  enabled: false
+  agent:
+    # OCI reference of this chart, without the version
+    chart: oci://ghcr.io/suse/chart/aif-operator
+    # defaults to this chart's version
+    version: ""
+
 trainingChart:
   clusterRepo:
     create: true

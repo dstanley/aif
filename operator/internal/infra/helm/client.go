@@ -70,6 +70,10 @@ type ReleaseSpec struct {
 	RegistryAuth *RegistryAuth
 	// TLSConfig optionally supplies registry TLS trust (private CA / mTLS / skip-verify). In-memory only.
 	TLSConfig *tls.Config
+	// RefuseAdoption turns off TakeOwnership (see install), so the release fails rather than adopting
+	// an object another release or a user already owns. For releases a namespace user can name, such
+	// as an AIJob's: adopting would hand that user the operator's right to delete the object.
+	RefuseAdoption bool
 }
 
 // RegistryAuth carries resolved chart-pull credentials. Never logged or persisted.

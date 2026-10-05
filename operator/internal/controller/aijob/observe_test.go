@@ -220,3 +220,54 @@ func TestExecutionNameFollowsTheChartFullname(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// attempt is pod with its creation time: the Job's retries of one index differ only in that.
+func attempt(name string, idx int, phase corev1.PodPhase, created time.Duration, exit *int32) corev1.Pod {
+	p := pod(name, idx, phase, created, exit)
+	p.CreationTimestamp = metav1.NewTime(t0.Add(created))
+	return p
+}
+
+func TestARetryThatSucceededIsASuccess(t *testing.T) {
+	pods := []corev1.Pod{
+		attempt("w-0-a", 0, corev1.PodFailed, 0, i32(1)),
+		attempt("w-0-b", 0, corev1.PodSucceeded, time.Minute, i32(0)),
+		attempt("w-1-a", 1, corev1.PodSucceeded, 0, i32(0)),
+	}
+	assert.Equal(t, int32(0), *exitCode(pods), "the failed first attempt of index 0 was retried")
+
+	retried := append(append(make([]corev1.Pod, 0, len(pods)+1), pods...), attempt("w-1-b", 1, corev1.PodFailed, 2*time.Minute, i32(3)))
+	assert.Equal(t, int32(3), *exitCode(retried), "the latest attempt of index 1 failed")
+}
+
+func TestLatestAttempts(t *testing.T) {
+	got := latestAttempts([]corev1.Pod{
+		attempt("w-0-b", 0, corev1.PodSucceeded, time.Minute, i32(0)),
+		attempt("w-0-a", 0, corev1.PodFailed, 0, i32(1)),
+		attempt("w-1-a", 1, corev1.PodRunning, 0, nil),
+		{ObjectMeta: metav1.ObjectMeta{Name: "master-0"}},
+	})
+	names := make([]string, 0, len(got))
+	for _, p := range got {
+		names = append(names, p.Name)
+	}
+	assert.ElementsMatch(t, []string{"w-0-b", "w-1-a", "master-0"}, names)
+}
+
+func TestPodCountsSurviveThePodsGoing(t *testing.T) {
+	st := &v1alpha1.AIJobStatus{}
+	var pods []corev1.Pod
+	for i := 0; i < 20; i++ {
+		pods = append(pods, pod(fmt.Sprintf("w-%02d", i), i, corev1.PodSucceeded, 0, i32(0)))
+	}
+	mergePods(st, pods)
+	require.NotNil(t, st.PodCounts)
+	assert.Equal(t, int32(20), st.PodCounts.Succeeded)
+
+	mergePods(st, pods[:5]) // some removed while the Job still runs
+	assert.Equal(t, int32(20), st.PodCounts.Succeeded, "a finished pod stays counted")
+
+	mergePods(st, nil) // the Job and its pods are gone
+	assert.Equal(t, int32(20), st.PodCounts.Succeeded)
+	assert.Empty(t, st.Pods, "only failed pods are listed above sixteen")
+}

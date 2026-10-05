@@ -1,3 +1,4 @@
+{{- if .Values.rancherReadinessCheck.enabled }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -57,3 +58,4 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "aif-operator.fullname" . }}-check-rancher-readiness
     namespace: {{ .Release.Namespace }}
+{{- end }}

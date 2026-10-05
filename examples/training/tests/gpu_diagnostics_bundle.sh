@@ -91,4 +91,5 @@ else
 fi
 $ok && st=pass || st=fail
 echo "AIF_RESULT {\"test\":\"GPU Diagnostics Bundle\",\"status\":\"$st\",\"checks\":[$checks],\"metrics\":{$metrics},\"env\":{\"node\":\"${NODE_NAME:-$(hostname)}\",\"host-level\":\"run nvidia-bug-report.sh on the node for the kernel log and PCI tree\"}}"
-$ok
+# a check that failed fails again: exit 3 fails the run without a retry (job.failFastExitCodes)
+$ok || exit 3

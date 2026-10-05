@@ -1,0 +1,12 @@
+{{- /*
+The default training and test profiles: ConfigMaps in ai-profiles, with a Role letting every
+authenticated user read them. Installed by the training agent on an AI-enabled cluster (see
+aiClusters), so its Catalog has something to offer before anyone writes a profile. The files are
+examples/training/profiles, copied here (tests/training-profiles-sync.sh keeps them equal).
+*/ -}}
+{{- if .Values.trainingProfiles.install }}
+{{- range $path, $_ := .Files.Glob "files/training-profiles/*.yaml" }}
+---
+{{ $.Files.Get $path }}
+{{- end }}
+{{- end }}

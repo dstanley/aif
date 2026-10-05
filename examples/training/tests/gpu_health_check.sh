@@ -40,4 +40,5 @@ fi
 # DCGM's own verdict where our reading of it has a failure; persistence-mode-only is a warning
 st=pass; echo "$checks" | grep -q '"ok":false' && st=fail
 echo "AIF_RESULT {\"test\":\"GPU Health Check\",\"status\":\"$st\",\"checks\":[$checks],\"metrics\":{\"DCGM level\":\"$level\"},\"env\":{\"DCGM\":\"$(meta 'DCGM Version')\",\"driver\":\"$(meta 'Driver Version')\",\"GPU device IDs\":\"$(meta 'GPU Device IDs')\",\"node\":\"${NODE_NAME:-$(hostname)}\"}}"
-[ "$st" = pass ]
+# a check that failed fails again: exit 3 fails the run without a retry (job.failFastExitCodes)
+[ "$st" = pass ] || exit 3
