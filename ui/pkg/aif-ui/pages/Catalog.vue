@@ -1,7 +1,10 @@
 <script lang="ts" setup>
 // The Catalog: everything a user can deploy. Training and inference profiles (governed, into a
 // project on this cluster), blueprints (to this or other clusters through Fleet) and apps from the
-// app catalog. Each card's Deploy opens the flow that kind already has.
+// app catalog. Each card's Deploy opens the flow that kind already has. In a cluster's AI Training
+// section it is that cluster's training catalog: its training and test profiles, run there. Each card
+// is a compute profile, which an administrator edits from the card's menu. Apps and blueprints are
+// deployed centrally, from AI Factory's Apps and Blueprints.
 import { computed, getCurrentInstance, onMounted, reactive, ref } from 'vue';
 import jsyaml from 'js-yaml';
 import Banner from '@components/Banner/Banner.vue';
@@ -19,14 +22,15 @@ import { fetchStaticCatalog } from '../services/static-catalog';
 import { resolveInstallRepoName } from '../services/app-collection';
 import { PRODUCT } from '../config/suseai';
 import { profilesFrom, Profile } from '../training/profiles';
-import { DEPLOY_PAGE, ENDPOINT_PAGE } from '../training/config';
+import { DEPLOY_PAGE, ENDPOINT_PAGE, SUBMIT_PAGE } from '../training/config';
 import {
-  CatalogApp, CatalogBlueprint, CatalogItem, CatalogKind, catalogItems, catalogSections, deployLabel, filterCatalog
+  CatalogApp, CatalogBlueprint, CatalogItem, CatalogKind, CatalogTab, catalogItems, catalogSections, deployLabel, filterCatalog, tabItems
 } from '../training/catalog';
 import {
   CATALOG_SHOW_APPS, CATALOG_SHOW_WRAPPED, getPref, setPref
 } from '../training/prefs';
 import { checkOperatorConnection, getConnectionError } from '../utils/operator-config';
+import { inClusterSection, trainingLink } from '../training/section';
 import { useT } from '../composables/useT';
 import { loadClusterLabel } from '../training/cluster';
 
@@ -35,11 +39,12 @@ const store = vm.$store;
 const t = useT();
 const cluster = computed(() => String(vm.$route.params.cluster || 'local'));
 
-const TABS: { key: '' | CatalogKind; label: string }[] = [
+const TABS: { key: CatalogTab; label: string }[] = [
   { key: '', label: t('suseai.pages.catalog.tabs.all', 'All') },
   { key: 'application', label: t('suseai.pages.catalog.tabs.application', 'Applications') },
   { key: 'training', label: t('suseai.pages.catalog.tabs.training', 'Training') },
   { key: 'inference', label: t('suseai.pages.catalog.tabs.inference', 'Inference') },
+  { key: 'blueprint', label: t('suseai.pages.catalog.tabs.blueprint', 'Blueprints') },
 ];
 const KIND_LABEL: Record<CatalogKind, string> = {
   training:    t('suseai.pages.catalog.kinds.training', 'Training'),
@@ -56,10 +61,17 @@ const apps = ref<CatalogApp[]>([]);
 const selectedVersions = reactive<Record<string, string>>({});
 const filter = ref({ text: '', status: '' as '' | 'ready' | 'beta' });
 
-const tab = computed<'' | CatalogKind>(() => {
+// a cluster's AI Training section: its training catalog, no tabs
+const clusterSection = inClusterSection(vm.$route);
+// whether this user may write the cluster's profiles (ConfigMaps in ai-profiles), for Edit and New
+const canEditProfiles = ref(false);
+const tab = computed<CatalogTab>(() => {
+  if (clusterSection) {
+    return 'training';
+  }
   const t = String(vm.$route.query.tab || '');
 
-  return (['application', 'training', 'inference'].includes(t) ? t : '') as '' | CatalogKind;
+  return (TABS.some((tb) => tb.key === t) ? t : '') as CatalogTab;
 });
 const showWrapped = computed(() => getPref(CATALOG_SHOW_WRAPPED.key, CATALOG_SHOW_WRAPPED.def));
 const showApps = computed({
@@ -67,18 +79,23 @@ const showApps = computed({
   set: (value: boolean) => setPref(CATALOG_SHOW_APPS.key, CATALOG_SHOW_APPS.def, value),
 });
 const items = computed(() => catalogItems(profiles.value, blueprints.value, showWrapped.value, showApps.value ? apps.value : []));
-const visible = computed(() => filterCatalog(items.value, tab.value, filter.value));
+const visible = computed(() => filterCatalog(tabItems(tab.value, items.value, blueprints.value), '', filter.value));
 // tests and benchmarks under their own heading; one untitled section when there are none
 const sections = computed(() => catalogSections(visible.value));
 // the tests and benchmarks section starts closed: occasional, and it would push the rest down
 const openSections = reactive<Record<string, boolean>>({});
 const isOpen = (s: { key: string; collapsible: boolean }) => !s.collapsible || !!openSections[s.key] || !!filter.value.text;
-const countOf = (k: '' | CatalogKind) => filterCatalog(items.value, k, { text: '', status: '' }).length;
+const countOf = (k: CatalogTab) => tabItems(k, items.value, blueprints.value).length;
 
 async function load() {
   loading.value = true;
   error.value = '';
   try {
+    if (clusterSection) {
+      profiles.value = profilesFrom(await store.dispatch('cluster/findAll', { type: 'configmap', opt: { force: true } }), (s: string) => jsyaml.load(s));
+
+      return;
+    }
     // the operator API (blueprints, the app catalog) needs its connection resolved first
     await checkOperatorConnection();
     const operatorError = getConnectionError();
@@ -147,6 +164,9 @@ const clusterName = ref('');
 
 onMounted(() => {
   load();
+  if (clusterSection) {
+    checkProfileAccess();
+  }
   loadClusterLabel(store, cluster.value).then((l) => {
     clusterName.value = l;
   });
@@ -156,9 +176,7 @@ const tabRoute = (key: string) => ({ query: key ? { tab: key } : {} });
 
 function deployRoute(i: CatalogItem): any {
   if (i.profile) {
-    return {
-      name: `c-cluster-${ PRODUCT }-${ i.profile.type === 'inference' ? ENDPOINT_PAGE : DEPLOY_PAGE }`, params: { cluster: cluster.value }, query: { profile: i.profile.name }
-    };
+    return trainingLink(vm.$route, i.profile.type === 'inference' ? ENDPOINT_PAGE : DEPLOY_PAGE, { profile: i.profile.name });
   }
 
   return blueprintInstall(i.blueprint!);
@@ -180,11 +198,39 @@ const appLogo = (a: CatalogApp) => resolveCatalogLogo({ logo_url: a.logo, librar
 const onAppLogoError = (e: Event, a: CatalogApp) => onCatalogLogoError(e, { logo_url: a.logo, library: a.library, slug_name: a.slug } as any, genericLogo);
 const appsRoute = computed(() => ({ name: `c-cluster-${ PRODUCT }-apps`, params: { cluster: cluster.value } }));
 function actions(i: CatalogItem): any[] {
+  if (clusterSection) {
+    return canEditProfiles.value && i.profile ? [{ action: 'edit', label: t('suseai.pages.catalog.editProfile', 'Edit profile'), enabled: true }] : [];
+  }
+
   return i.wraps ? [{ action: 'fleet', label: t('suseai.pages.catalog.deployToClusters', 'Deploy to other clusters…'), enabled: true }] : [];
 }
 function onAction(payload: { action: string }, i: CatalogItem) {
   if (payload.action === 'fleet' && i.wraps) {
     vm.$router.push(blueprintInstall(i.wraps));
+  }
+  if (payload.action === 'edit' && i.profile) {
+    vm.$router.push(trainingLink(vm.$route, SUBMIT_PAGE, { authorProfile: i.profile.name }));
+  }
+}
+// a new training profile: the full form, in profile-authoring mode
+const newProfileRoute = computed(() => trainingLink(vm.$route, SUBMIT_PAGE, { authorProfile: 'new' }));
+
+/** A SelfSubjectAccessReview: may this user create ConfigMaps in this cluster's ai-profiles? */
+async function checkProfileAccess() {
+  try {
+    const res = await store.dispatch('cluster/request', {
+      url:    `/k8s/clusters/${ encodeURIComponent(cluster.value) }/apis/authorization.k8s.io/v1/selfsubjectaccessreviews`,
+      method: 'POST',
+      data:   {
+        apiVersion: 'authorization.k8s.io/v1',
+        kind:       'SelfSubjectAccessReview',
+        spec:       { resourceAttributes: { verb: 'create', resource: 'configmaps', namespace: 'ai-profiles' } },
+      },
+    });
+
+    canEditProfiles.value = !!res?.status?.allowed;
+  } catch {
+    canEditProfiles.value = false;
   }
 }
 function scope(i: CatalogItem): string {
@@ -192,14 +238,20 @@ function scope(i: CatalogItem): string {
 }
 // catalog.ts names sections and buttons in English (its tests read them); the page translates them
 const sectionTitle = (s: { key: string; title: string }) => (s.title ? t(`suseai.pages.catalog.sections.${ s.key }`, s.title) : '');
-const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpose === 'test' || i.purpose === 'benchmark' ? i.purpose : 'run' }`, deployLabel(i));
+const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpose === 'test' || i.purpose === 'benchmark' ? i.purpose : i.kind === 'training' ? 'job' : 'run' }`, deployLabel(i));
 </script>
 
 <template>
   <main class="main-layout">
     <div class="outlet">
       <header class="fixed-header">
-        <h1>{{ t('suseai.pages.catalog.title', 'Catalog') }}</h1>
+        <h1>
+          {{ t('suseai.pages.catalog.title', 'Catalog') }}
+          <span
+            v-if="clusterSection && clusterName"
+            class="text-muted catalog-cluster"
+          >· {{ clusterName }}</span>
+        </h1>
         <div
           class="actions-container"
           role="toolbar"
@@ -229,12 +281,19 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
             </option>
           </select>
           <Checkbox
-            v-if="!tab || tab === 'application'"
+            v-if="!clusterSection && (!tab || tab === 'application')"
             v-model:value="showApps"
             :label="t('suseai.pages.catalog.showApps', 'Show apps')"
           />
-          <button
+          <router-link
+            v-if="clusterSection && canEditProfiles"
+            :to="newProfileRoute"
             class="btn role-secondary ml-auto"
+          >
+            <i class="icon icon-plus" /> {{ t('suseai.pages.catalog.newProfile', 'New profile') }}
+          </router-link>
+          <button
+            :class="['btn role-secondary', { 'ml-auto': !(clusterSection && canEditProfiles) }]"
             type="button"
             :disabled="loading"
             @click="load"
@@ -246,6 +305,7 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
       </header>
 
       <nav
+        v-if="!clusterSection"
         class="catalog-tabs"
         :aria-label="t('suseai.pages.catalog.sectionsLabel', 'Catalog sections')"
       >
@@ -463,6 +523,7 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
   text-decoration: none;
   &.active { border-bottom-color: var(--primary); color: var(--primary); }
 }
+.catalog-cluster { font-size: 0.7em; font-weight: normal; }
 .tab-count { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--border); color: var(--body-text); margin-left: 4px; }
 // auto-fill keeps the columns when a row is short, so cards keep one width without filler tiles
 .tiles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }

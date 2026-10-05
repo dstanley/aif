@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { catalogItems, catalogSections, deployLabel, filterCatalog } from '../catalog';
+import { catalogItems, catalogSections, deployLabel, filterCatalog, tabItems } from '../catalog';
 
 const profile = (over: any) => ({
   name: 'p', type: 'training', displayName: 'P', description: '', framework: 'PyTorch', gpu: 'A2000', status: 'ready', blueprint: null, ...over
@@ -62,7 +62,34 @@ describe('validation profiles', () => {
     ], [], false);
 
     expect(items.map((i) => i.title)).toEqual(['LoRA fine-tune', 'GPU Smoke Test', 'NCCL Fabric Benchmark']);
-    expect(catalogSections(items).map((s) => [s.title, s.items.length, s.collapsible])).toEqual([['Deploy', 1, false], ['Validate your environment', 2, true]]);
-    expect(items.map(deployLabel)).toEqual(['Deploy', 'Run test', 'Run benchmark']);
+    expect(catalogSections(items).map((s) => [s.title, s.items.length, s.collapsible])).toEqual([['Run or deploy', 1, false], ['Validate your environment', 2, true]]);
+    expect(items.map(deployLabel)).toEqual(['Run', 'Run test', 'Run benchmark']);
+  });
+});
+
+describe('tabItems', () => {
+  const profiles = [
+    profile({ name: 'lora', displayName: 'LoRA fine-tune' }),
+    profile({
+      name: 'qwen', type: 'inference', displayName: 'Qwen endpoint', blueprint: { name: 'sie', version: '1.3.0' }
+    }),
+  ];
+  const blueprints = [
+    blueprint({ family: 'sie', displayName: 'SUSE Inference Endpoint', category: 'inference' }),
+    blueprint({ family: 'rag', displayName: 'NVIDIA RAG' }),
+  ];
+  const items = catalogItems(profiles, blueprints, false);
+
+  it('lists every blueprint in the Blueprints tab, one a profile wraps included, and nothing else', () => {
+    const got = tabItems('blueprint', items, blueprints);
+
+    expect(got.map((i) => i.title)).toEqual(['SUSE Inference Endpoint', 'NVIDIA RAG']);
+    expect(got.every((i) => i.from === 'blueprint')).toBe(true);
+  });
+
+  it('keeps the kind tabs as they are', () => {
+    expect(tabItems('', items, blueprints)).toEqual(items);
+    expect(tabItems('inference', items, blueprints).map((i) => i.title)).toEqual(['Qwen endpoint']);
+    expect(tabItems('application', items, blueprints).map((i) => i.title)).toEqual(['NVIDIA RAG']);
   });
 });

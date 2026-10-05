@@ -2,6 +2,8 @@ import { importTypes } from '@rancher/auto-import';
 import type { IPlugin } from '@shell/core/types';
 import routes from './routing';
 import * as productModule from './product';
+import * as clusterProductModule from './training/clusterProduct';
+import { clusterRoutes } from './training/clusterProduct';
 import './style/brand.css';
 
 export default function(plugin: IPlugin): void {
@@ -14,4 +16,8 @@ export default function(plugin: IPlugin): void {
 
   // Add routes explicitly
   plugin.addRoutes(routes);
+
+  // The per-cluster AI Training section, in each cluster that serves the AIJob API
+  plugin.addProduct(clusterProductModule as any);
+  plugin.addRoutes(clusterRoutes);
 }

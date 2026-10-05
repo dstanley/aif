@@ -5,7 +5,8 @@ import Loading from '@shell/components/Loading.vue';
 import StatusPill from '../components/StatusPill.vue';
 import Banner from '@components/Banner/Banner.vue';
 import jsyaml from 'js-yaml';
-import { DEPLOY_PAGE, ENDPOINT_PAGE, INFERENCE_PROFILE_PAGE, PRODUCT_NAME, SUBMIT_PAGE } from '../config';
+import { DEPLOY_PAGE, ENDPOINT_PAGE, INFERENCE_PROFILE_PAGE, SUBMIT_PAGE } from '../config';
+import { trainingLink } from '../section';
 import { BLUEPRINT_TYPE, BlueprintSummary, findBlueprint, summarizeBlueprint } from '../inference';
 import {
   filterOptions, filterProfiles, NO_FILTER, Profile, PROFILE_KEY, PROFILE_LABEL, PROFILE_NAMESPACE, ProfileFilter, profilesFrom,
@@ -172,18 +173,10 @@ export default defineComponent({
       return p.type === 'inference' ? this.inferenceRoute(p.name) : this.authorRoute(p.name);
     },
     inferenceRoute(name: string) {
-      return {
-        name:   `c-cluster-${ PRODUCT_NAME }-${ INFERENCE_PROFILE_PAGE }`,
-        params: { cluster: this.$route.params.cluster },
-        query:  name ? { profile: name } : {},
-      };
+      return trainingLink(this.$route, INFERENCE_PROFILE_PAGE, name ? { profile: name } : {});
     },
     authorRoute(name: string) {
-      return {
-        name:   `c-cluster-${ PRODUCT_NAME }-${ SUBMIT_PAGE }`,
-        params: { cluster: this.$route.params.cluster },
-        query:  { authorProfile: name },
-      };
+      return trainingLink(this.$route, SUBMIT_PAGE, { authorProfile: name });
     },
 
     bp(p: Profile): BlueprintSummary | null {
@@ -193,11 +186,7 @@ export default defineComponent({
     },
 
     deployRoute(p: Profile) {
-      return {
-        name:   `c-cluster-${ PRODUCT_NAME }-${ p.type === 'inference' ? ENDPOINT_PAGE : DEPLOY_PAGE }`,
-        params: { cluster: this.$route.params.cluster },
-        query:  { profile: p.name },
-      };
+      return trainingLink(this.$route, p.type === 'inference' ? ENDPOINT_PAGE : DEPLOY_PAGE, { profile: p.name });
     },
 
     scale(p: Profile): string {

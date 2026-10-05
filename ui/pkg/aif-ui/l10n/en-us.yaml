@@ -1,5 +1,6 @@
 product:
   suseai: SUSE AI Factory
+  aitraining: AI Training
 suseai:
   product:
     name: SUSE AI
@@ -45,6 +46,7 @@ suseai:
         application: Applications
         training: Training
         inference: Inference
+        blueprint: Blueprints
       kinds:
         application: Application
         training: Training
@@ -54,11 +56,14 @@ suseai:
         ready: Ready
         beta: Beta
       sections:
-        run: Deploy
+        run: Run or deploy
         validate: Validate your environment
         validateHint: GPU, PyTorch, distributed, network and storage checks
+      editProfile: Edit profile
+      newProfile: New profile
       deploy:
         run: Deploy
+        job: Run
         test: Run test
         benchmark: Run benchmark
       scope:
@@ -595,11 +600,11 @@ suseai:
       deleteSuccess: Deleted successfully
       confirmDelete: Are you sure you want to delete this item?
   workloads:
-    title: Deployments
-    newDeployment: New deployment
+    title: Workloads
+    newWorkload: New workload
     newApp: App
     newBlueprint: Blueprint
-    tabsLabel: Deployment type
+    tabsLabel: Workload type
     tabs:
       training: Training
       inference: Inference
@@ -635,7 +640,7 @@ trainingjobs:
     projects: Projects
     profiles: Profiles
     submit: Submit a Job
-    endpoints: Deployments
+    endpoints: Jobs
   projects:
     title: Projects
     lede: Manage how AI Factory GPU capacity is allocated across teams.
@@ -668,7 +673,13 @@ trainingjobs:
       network: Networking
       fabric: RDMA fabric
   endpoints:
-    title: Deployments
+    title: Jobs
     subtitle: >-
-      Manage and monitor all training runs and inference endpoints. Open a row for its pods, logs
-      and YAML.
+      Training and test runs on this cluster. Open a row for its pods, logs, results and YAML.
+aitraining:
+  nav:
+    overview: Overview
+    catalog: Catalog
+    jobs: Jobs
+    projects: Projects and Quotas
+    profiles: Compute Profiles

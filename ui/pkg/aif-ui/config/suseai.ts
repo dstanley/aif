@@ -59,6 +59,8 @@ export const PAGE_TYPES = {
   REPOSITORIES: 'repositories',
   BLUEPRINTS:   'blueprints',
   WORKLOADS:    'workloads',
+  JOBS:         'jobs',
+  CLUSTERS:     'clusters',
   PROJECTS:     'projects',
   PROFILES:     'profiles',
   CATALOG:      'catalog',
@@ -75,31 +77,48 @@ export interface VirtualTypeConfig {
 
 export const VIRTUAL_TYPES: VirtualTypeConfig[] = [
   {
-    // The local cluster: its GPU capacity and projects panels read that cluster's store.
     name:  PAGE_TYPES.OVERVIEW,
     label: 'Overview',
     route: {
-      name:   `c-cluster-${PRODUCT}-${PAGE_TYPES.OVERVIEW}`,
+      name:   `c-cluster-${ PRODUCT }-${ PAGE_TYPES.OVERVIEW }`,
       params: { product: PRODUCT, cluster: MANAGEMENT_CLUSTER },
       meta:   { product: PRODUCT, cluster: MANAGEMENT_CLUSTER }
     }
   },
   {
-    name:  PAGE_TYPES.CATALOG,
-    label: 'Catalog',
+    name:  PAGE_TYPES.APPS,
+    label: 'Apps',
     route: {
-      name:   `c-cluster-${ PRODUCT }-${ PAGE_TYPES.CATALOG }`,
+      name:   `c-cluster-${ PRODUCT }-${ PAGE_TYPES.APPS }`,
       params: { product: PRODUCT, cluster: MANAGEMENT_CLUSTER },
       meta:   { product: PRODUCT, cluster: MANAGEMENT_CLUSTER }
     }
   },
   {
-    // The local cluster: training runs (AIJobs) run where the operator does, and the Training tab
-    // reads that cluster's resources.
+    name:  PAGE_TYPES.BLUEPRINTS,
+    label: 'Blueprints',
+    route: {
+      name:   `c-cluster-${ PRODUCT }-${ PAGE_TYPES.BLUEPRINTS }`,
+      params: { product: PRODUCT, cluster: MANAGEMENT_CLUSTER },
+      meta:   { product: PRODUCT, cluster: MANAGEMENT_CLUSTER }
+    }
+  },
+  {
+    // Apps and blueprints AI Factory deployed, on any cluster, through Fleet
     name:  PAGE_TYPES.WORKLOADS,
-    label: 'Deployments',
+    label: 'Workloads',
     route: {
       name:   `c-cluster-${ PRODUCT }-${ PAGE_TYPES.WORKLOADS }`,
+      params: { product: PRODUCT, cluster: MANAGEMENT_CLUSTER },
+      meta:   { product: PRODUCT, cluster: MANAGEMENT_CLUSTER }
+    }
+  },
+  {
+    // Where AI runs: each cluster's GPUs and jobs, and enabling AI on a cluster
+    name:  PAGE_TYPES.CLUSTERS,
+    label: 'Clusters',
+    route: {
+      name:   `c-cluster-${ PRODUCT }-${ PAGE_TYPES.CLUSTERS }`,
       params: { product: PRODUCT, cluster: MANAGEMENT_CLUSTER },
       meta:   { product: PRODUCT, cluster: MANAGEMENT_CLUSTER }
     }
@@ -127,14 +146,16 @@ export const VIRTUAL_TYPES: VirtualTypeConfig[] = [
 // Explicit sidebar ordering: higher weight = higher in the list.
 export const NAV_WEIGHTS: Record<string, number> = {
   [PAGE_TYPES.OVERVIEW]:   50,
-  [PAGE_TYPES.CATALOG]:    45,
-  [PAGE_TYPES.WORKLOADS]:  20,
+  [PAGE_TYPES.APPS]:       45,
+  [PAGE_TYPES.BLUEPRINTS]: 40,
+  [PAGE_TYPES.WORKLOADS]:  30,
+  [PAGE_TYPES.CLUSTERS]:   20,
   [PAGE_TYPES.SETTINGS]:   10,
   [PAGE_TYPES.ABOUT]:      5,
 };
 
 // === Basic Types Configuration ===
-export const BASIC_TYPES = [PAGE_TYPES.OVERVIEW, PAGE_TYPES.CATALOG, PAGE_TYPES.WORKLOADS, PAGE_TYPES.SETTINGS, PAGE_TYPES.ABOUT];
+export const BASIC_TYPES = [PAGE_TYPES.OVERVIEW, PAGE_TYPES.APPS, PAGE_TYPES.BLUEPRINTS, PAGE_TYPES.WORKLOADS, PAGE_TYPES.CLUSTERS, PAGE_TYPES.SETTINGS, PAGE_TYPES.ABOUT];
 
 // === Export defaults ===
 export default SUSEAI_PRODUCT;

@@ -10,6 +10,14 @@ export default [
     meta:     { product: PRODUCT }
   },
 
+  // Clusters: where AI runs, each cluster's GPUs and jobs, and enabling AI on a cluster
+  {
+    name:      `c-cluster-${PRODUCT}-${PAGE_TYPES.CLUSTERS}`,
+    path:      `/c/:cluster/${PRODUCT}/${PAGE_TYPES.CLUSTERS}`,
+    component: () => import('./pages/AiClusters.vue'),
+    meta:      { product: PRODUCT, category: 'clusters' }
+  },
+
   // Overview page
   {
     name:      `c-cluster-${PRODUCT}-${PAGE_TYPES.OVERVIEW}`,

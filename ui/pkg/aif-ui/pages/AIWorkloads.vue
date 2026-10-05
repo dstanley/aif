@@ -11,7 +11,6 @@ import { uninstallWorkload } from '../services/workload-uninstall';
 import { phaseBadgeColor, phaseBadgeIcon, workloadStatusMessage } from '../utils/workload-status';
 import OperatorErrorBanner from '../components/OperatorErrorBanner.vue';
 import AIWorkloadDetailPanel from '../components/AIWorkloadDetailPanel.vue';
-import TrainingWorkloads from '../training/pages/Workloads.vue';
 import type { AIWorkload } from '../types/aiworkload-types';
 import type { Blueprint } from '../types/blueprint-types';
 import { PRODUCT, PAGE_TYPES } from '../config/suseai';
@@ -30,16 +29,20 @@ const t       = useT();
 const vm      = getCurrentInstance()!.proxy as any;
 const router  = vm.$router;
 const route   = vm.$route;
-// Training runs (AIJobs) are a tab of this page; the tab is in the URL so a link opens it.
+// Training runs moved to Jobs, which lists every cluster's; an old link to this page's Training tab
+// lands there.
 const trainingTab = computed(() => vm.$route.query.tab === 'training');
-// Deployments by what they are: training runs (AIJobs), inference endpoints (an AIWorkload from an
-// inference profile, or of category inference), and applications (every other AIWorkload).
+
+if (trainingTab.value) {
+  router.replace({ name: `c-cluster-${ PRODUCT }-${ PAGE_TYPES.JOBS }`, params: { cluster: route.params.cluster } });
+}
+// Persistent workloads the operator deploys through Fleet, by what they are: inference endpoints (an
+// AIWorkload from an inference profile, or of category inference) and applications (every other).
 const TABS = [
-  { key: 'training', label: t('suseai.workloads.tabs.training', 'Training') },
   { key: 'inference', label: t('suseai.workloads.tabs.inference', 'Inference') },
   { key: '', label: t('suseai.workloads.tabs.applications', 'Applications') },
 ];
-const currentTab = computed(() => (['training', 'inference'].includes(String(vm.$route.query.tab)) ? String(vm.$route.query.tab) : ''));
+const currentTab = computed(() => (vm.$route.query.tab === 'inference' ? 'inference' : ''));
 const isInference = (w: AIWorkload) => !!(w.metadata as any).labels?.['trainingjobs/profile'] || (w.spec as any).category === 'inference';
 const newOpen = ref(false);
 const cluster = (route?.params?.cluster as string) || '_';
@@ -420,7 +423,7 @@ async function doRetry(w: AIWorkload) {
   <main class="main-layout">
     <div class="outlet">
       <header class="fixed-header">
-        <h1>{{ t('suseai.workloads.title', 'Deployments') }}</h1>
+        <h1>{{ t('suseai.workloads.title', 'Workloads') }}</h1>
         <div v-if="!trainingTab" class="actions-container">
           <div class="search-box">
             <input
@@ -438,7 +441,7 @@ async function doRetry(w: AIWorkload) {
           </select>
           <div class="new-deployment ml-auto" @click.stop>
             <button class="btn role-primary" type="button" :aria-expanded="newOpen" @click="newOpen = !newOpen">
-              <i class="icon icon-plus" /> {{ t('suseai.workloads.newDeployment', 'New deployment') }} <i class="icon icon-chevron-down" />
+              <i class="icon icon-plus" /> {{ t('suseai.workloads.newWorkload', 'New workload') }} <i class="icon icon-chevron-down" />
             </button>
             <ul v-if="newOpen" class="new-deployment-menu">
               <li><router-link :to="{ name: `c-cluster-${ PRODUCT }-${ PAGE_TYPES.APPS }`, params: { cluster: route.params.cluster } }">{{ t('suseai.workloads.newApp', 'App') }}</router-link></li>
@@ -454,7 +457,7 @@ async function doRetry(w: AIWorkload) {
         <div v-else id="workloads-toolbar" />
       </header>
 
-      <nav class="workload-tabs" :aria-label="t('suseai.workloads.tabsLabel', 'Deployment type')">
+      <nav class="workload-tabs" :aria-label="t('suseai.workloads.tabsLabel', 'Workload type')">
         <router-link
           v-for="tb in TABS"
           :key="tb.key"
@@ -465,9 +468,7 @@ async function doRetry(w: AIWorkload) {
         </router-link>
       </nav>
 
-      <TrainingWorkloads v-if="trainingTab" fixed-tab="training" />
-
-      <template v-else>
+      <template v-if="!trainingTab">
       <OperatorErrorBanner v-if="operatorError" :operator-error="operatorError" @retry="retryConnection" />
 
       <Banner v-if="error" color="error" class="mb-20">{{ error }}</Banner>

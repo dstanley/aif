@@ -9,8 +9,9 @@ import AsyncButton from '@shell/components/AsyncButton.vue';
 import ChartRepoBanner from '../components/ChartRepoBanner.vue';
 import { CapacitySummary, ProjectUsage, capacitySummary, gpuModels } from '../capacity';
 import {
-  ENDPOINTS_PAGE, GPU_RESOURCE, PRODUCT_NAME, SUBMIT_PAGE, TYPES
+  GPU_RESOURCE, SUBMIT_PAGE, TYPES
 } from '../config';
+import { trainingLink } from '../section';
 import { loadClusterLabel } from '../cluster';
 import {
   ClusterCapacity, QueueIndex, QuotaIssue, auditQuotas, buildQueueIndex, clusterCapacity,
@@ -21,7 +22,7 @@ import {
   buildNamespaceManifest, buildProjectBindingPatch, buildQueueManifest, buildRancherProjectManifest,
   committedGpuAfter, defaultNamespaceFor, projectIdFromSaveResult, projectSourceLabel,
   projectWarning, resolveCreatedProject, runaiProjectsFrom, runaiReadinessOf,
-  shortProjectId, validateCap,
+  shortProjectId, validateCap, isAiProject, AI_PROJECT_LABEL,
   validateProjectName, validateQuota,
 } from '../projects';
 import {
@@ -56,6 +57,8 @@ export default defineComponent({
       projects:            [] as AiProject[],
       /** Every Rancher project id already in use on this cluster, so a new one cannot collide. */
       rancherProjectNames: [] as string[],
+      /** This cluster's AI projects, by short id: AI Factory hands them the registry credentials. */
+      credentialProjects:  [] as string[],
       issues:              [] as QuotaIssue[],
       queueIndex:          {} as QueueIndex,
       capacity:            { ...EMPTY_CAPACITY } as ClusterCapacity,
@@ -318,7 +321,7 @@ export default defineComponent({
       return this.form.name ? defaultNamespaceFor(this.form.name) : '';
     },
     submitRoute() {
-      return { name: `c-cluster-${ PRODUCT_NAME }-${ SUBMIT_PAGE }`, params: { cluster: this.clusterId } };
+      return trainingLink(this.$route, SUBMIT_PAGE);
     },
 
     /**
@@ -349,6 +352,35 @@ export default defineComponent({
   },
 
   methods: {
+    /** Whether AI Factory hands this project the registry credentials (it is an AI project). */
+    hasCredentials(p: AiProject): boolean {
+      const short = shortProjectId(p.rancherProjectId);
+
+      return !!short && this.credentialProjects.includes(short);
+    },
+    /**
+     * Make an existing Rancher project an AI project, so its namespaces receive the registry pull
+     * secret. A merge patch of the one label, through the management cluster's API.
+     */
+    async enableCredentials(p: AiProject) {
+      const short = shortProjectId(p.rancherProjectId);
+
+      if (!short) {
+        return;
+      }
+      try {
+        await this.$store.dispatch('management/request', {
+          url:     `/k8s/clusters/local/apis/management.cattle.io/v3/namespaces/${ encodeURIComponent(this.clusterId) }/projects/${ encodeURIComponent(short) }`,
+          method:  'PATCH',
+          headers: { 'content-type': 'application/merge-patch+json' },
+          data:    { metadata: { labels: { [AI_PROJECT_LABEL]: 'true' } } },
+        });
+        this.credentialProjects = [...this.credentialProjects, short];
+        this.notice = `${ p.displayName } now receives the registry credentials configured in AI Factory as the pull secret suse-ai-pull-combined in each of its namespaces.`;
+      } catch (e: any) {
+        this.error = `Could not enable registry credentials for ${ p.displayName }: ${ e?.message || e?.data?.message || e }`;
+      }
+    },
     async safeFindAll(store: string, type: string, label: string): Promise<any[]> {
       if (!this.$store.getters[`${ store }/schemaFor`](type)) {
         return [];
@@ -462,6 +494,7 @@ export default defineComponent({
         // Not scoped to this cluster: project ids are unique across Rancher, and a name taken on
         // another cluster is still a name we must not reuse.
         this.rancherProjectNames = rancherProjects.map((p: any) => p.metadata?.name).filter(Boolean);
+        this.credentialProjects = rancherProjects.filter((p: any) => p.metadata?.namespace === this.clusterId && isAiProject(p)).map((p: any) => p.metadata.name);
         this.projects = assembleProjects(
           rancherProjects.filter((p: any) => p.metadata?.namespace === this.clusterId),
           namespaces,
@@ -533,11 +566,7 @@ export default defineComponent({
       return `${ Math.min(100, (this.usageOf(p).gpus / denom) * 100) }%`;
     },
     workloadsRoute(p: AiProject, state = '') {
-      return {
-        name:   `c-cluster-${ PRODUCT_NAME }-${ ENDPOINTS_PAGE }`,
-        params: { cluster: this.clusterId },
-        query:  { ...(p.namespaces[0] ? { project: p.namespaces[0] } : {}), ...(state ? { state } : {}) },
-      };
+      return trainingLink(this.$route, 'jobs', { ...(p.namespaces[0] ? { project: p.namespaces[0] } : {}), ...(state ? { state } : {}) });
     },
     /** Configure GPU scheduling for a project that has none: a leaf queue, and its namespaces bound to it. */
     async configureScheduling(p: AiProject) {
@@ -1511,7 +1540,7 @@ export default defineComponent({
             </th>
             <th>GPU entitlement</th>
             <th>Current usage</th>
-            <th>Deployments</th>
+            <th>Jobs</th>
             <th />
           </tr>
         </thead>
@@ -1537,6 +1566,23 @@ export default defineComponent({
                   :label="sourceLabelFor(p)"
                   class="ap-badge"
                 />
+                <template v-else-if="p.rancherProjectId">
+                  <BadgeState
+                    v-if="hasCredentials(p)"
+                    v-clean-tooltip="'AI Factory\'s registry credentials are copied into each namespace of this project as suse-ai-pull-combined'"
+                    color="bg-success"
+                    label="Registry credentials"
+                    class="ap-badge"
+                  />
+                  <button
+                    v-else
+                    type="button"
+                    class="btn-sm role-link ap-cred"
+                    @click="enableCredentials(p)"
+                  >
+                    Provide registry credentials
+                  </button>
+                </template>
               </td>
               <td v-if="runaiInstalled">
                 <BadgeState

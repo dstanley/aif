@@ -1,16 +1,13 @@
 <script lang="ts" setup>
 import { ref, computed, onMounted, onUnmounted, getCurrentInstance } from 'vue';
-import GpuCapacityPanel from '../training/components/GpuCapacityPanel.vue';
-import ProjectsPanel from '../training/components/ProjectsPanel.vue';
-import { loadOverview } from '../training/overview';
-import type { Overview } from '../training/overview';
 import { Banner }    from '@components/Banner';
 import { BadgeState } from '@components/BadgeState';
 import CountBox      from '@shell/components/CountBox';
 import Loading       from '@shell/components/Loading';
 import { checkOperatorConnection, getConnectionError } from '../utils/operator-config';
 import OperatorErrorBanner from '../components/OperatorErrorBanner.vue';
-import { listAIWorkloads, listAIJobs } from '../utils/operator-api';
+import { listAIWorkloads } from '../utils/operator-api';
+import { AIJOB_TYPE } from '../training/aijob';
 import { listBlueprints, groupBlueprintsByFamily, latestVersion } from '../utils/blueprint-api';
 import { phaseBadgeColor, phaseBadgeIcon } from '../utils/workload-status';
 import type { AIWorkload } from '../types/aiworkload-types';
@@ -23,7 +20,6 @@ import { fetchManagedRepos } from '../services/app-collection';
 import type { ManagedRepo } from '../services/app-collection';
 import { requestErrorMessage } from '../services/rancher-token';
 import RepositoryHealthBanner from './components/RepositoryHealthBanner.vue';
-import { loadClusterLabel } from '../training/cluster';
 
 const vm      = getCurrentInstance()!.proxy as any;
 const router  = vm.$router;
@@ -38,9 +34,9 @@ const blueprints = ref<Blueprint[]>([]);
 const clusters   = ref<ClusterInfo[]>([]);
 const repositories = ref<ManagedRepo[]>([]);
 const repositoryError = ref('');
-// Training runs (AIJobs), and GPU capacity and projects from the local cluster, where they run
+// Training runs (AIJobs) on the local cluster. GPU capacity and projects are per cluster: each
+// cluster's AI Training section shows them.
 const aiJobs     = ref<any[]>([]);
-const overview   = ref<Overview | null>(null);
 const deployOpen = ref(false);
 const FINISHED   = ['Succeeded', 'Failed', 'Cancelled'];
 
@@ -50,7 +46,6 @@ const activeJobs       = computed(() => aiJobs.value.filter(j => !FINISHED.inclu
 const totalWorkloads   = computed(() => workloads.value.length + activeJobs.value.length);
 const runningWorkloads = computed(() => workloads.value.filter(w => w.status?.phase === 'Running').length
   + aiJobs.value.filter(j => j.status?.phase === 'Running').length);
-const projectCount     = computed(() => overview.value?.projects.length ?? 0);
 const degradedWorkloads = computed(() => workloads.value.filter(w => w.status?.phase === 'Degraded').length);
 const failedWorkloads  = computed(() => workloads.value.filter(w => w.status?.phase === 'Failed').length);
 const issueWorkloads   = computed(() => degradedWorkloads.value + failedWorkloads.value);
@@ -116,25 +111,18 @@ function goTo(pageType: string, query?: Record<string, string>) {
   router.push({ name: `c-cluster-${ PRODUCT }-${ pageType }`, params: { cluster }, query });
 }
 
-// GPU capacity and projects need the local cluster's store; elsewhere the panels say so.
-async function refreshOverview() {
-  if (cluster !== MANAGEMENT_CLUSTER) {
-    overview.value = null;
+// Through Steve, as the Jobs pages read them, so a user counts only the AIJobs their RBAC lets
+// them see; the operator's API answers with its own service account.
+async function refreshJobs() {
+  if (cluster !== MANAGEMENT_CLUSTER || !vm.$store.getters['cluster/schemaFor'](AIJOB_TYPE)) {
+    aiJobs.value = []; // not the cluster the AIJobs are on, an operator without the AIJob API, or no access
 
     return;
   }
   try {
-    overview.value = await loadOverview(vm.$store, MANAGEMENT_CLUSTER);
+    aiJobs.value = await vm.$store.dispatch('cluster/findAll', { type: AIJOB_TYPE, opt: { force: true } }) || [];
   } catch {
-    overview.value = null;
-  }
-}
-
-async function refreshJobs() {
-  try {
-    aiJobs.value = (await listAIJobs()).items || [];
-  } catch {
-    aiJobs.value = []; // an operator without the AIJob API
+    aiJobs.value = [];
   }
 }
 
@@ -155,7 +143,6 @@ async function refresh() {
       getClusters(vm.$store).catch(() => [] as ClusterInfo[]),
       refreshRepositoryHealth(),
       refreshJobs(),
-      refreshOverview(),
     ]);
     workloads.value  = wlResult.items || [];
     blueprints.value = bpResult.items || [];
@@ -188,23 +175,14 @@ async function retryConnection() {
 async function silentRefresh() {
   if (loading.value) return;
   try {
-    // GPU capacity and projects read every pod and node: every third tick (30s) is often enough
-    ticks = (ticks + 1) % 3;
-    const [wlResult] = await Promise.all([listAIWorkloads(), refreshRepositoryHealth(), refreshJobs(), ticks === 0 ? refreshOverview() : Promise.resolve()]);
+    const [wlResult] = await Promise.all([listAIWorkloads(), refreshRepositoryHealth(), refreshJobs()]);
     workloads.value = wlResult.items || [];
   } catch { /* ignore */ }
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let ticks = 0;
-
-// GPU capacity and projects are read from this cluster; the panel says which
-const capacityCluster = ref('');
 
 onMounted(() => {
-  loadClusterLabel(vm.$store, MANAGEMENT_CLUSTER).then((l) => {
-    capacityCluster.value = l;
-  });
   refresh();
   pollTimer = setInterval(silentRefresh, 10_000);
 });
@@ -239,25 +217,25 @@ onUnmounted(() => {
               <li>
                 <button
                   type="button"
-                  @click="goTo(PAGE_TYPES.CATALOG, { tab: 'training' })"
+                  @click="goTo(PAGE_TYPES.CLUSTERS)"
                 >
-                  Training job
+                  Training job (on a cluster)
                 </button>
               </li>
               <li>
                 <button
                   type="button"
-                  @click="goTo(PAGE_TYPES.CATALOG, { tab: 'inference' })"
+                  @click="goTo(PAGE_TYPES.BLUEPRINTS)"
                 >
-                  Inference endpoint
+                  Blueprint
                 </button>
               </li>
               <li>
                 <button
                   type="button"
-                  @click="goTo(PAGE_TYPES.CATALOG, { tab: 'application' })"
+                  @click="goTo(PAGE_TYPES.APPS)"
                 >
-                  Application
+                  App
                 </button>
               </li>
             </ul>
@@ -306,7 +284,7 @@ onUnmounted(() => {
         <!-- ── Summary cards ─────────────────────────────────────────────── -->
         <section class="summary-grid">
           <CountBox
-            name="Deployments"
+            name="Workloads"
             :count="totalWorkloads"
             primary-color-var="--sizzle-info"
             :clickable="true"
@@ -326,13 +304,6 @@ onUnmounted(() => {
             :clickable="true"
             @click="goTo(PAGE_TYPES.WORKLOADS)"
           />
-          <CountBox
-            name="Projects"
-            :count="projectCount"
-            primary-color-var="--sizzle-3"
-            :clickable="true"
-            @click="goTo(PAGE_TYPES.PROJECTS)"
-          />
         </section>
 
         <!-- ── Two-column lower section ──────────────────────────────────── -->
@@ -340,7 +311,7 @@ onUnmounted(() => {
           <!-- Recent Deployments -->
           <section class="panel">
             <div class="panel-header">
-              <h3>Recent Deployments</h3>
+              <h3>Recent workloads</h3>
               <button
                 class="btn-link"
                 type="button"
@@ -406,27 +377,6 @@ onUnmounted(() => {
             </table>
           </section>
 
-          <!-- GPU Capacity -->
-          <section class="panel">
-            <div class="panel-header">
-              <h3>
-                GPU Capacity
-                <span
-                  v-if="capacityCluster"
-                  class="text-muted panel-cluster"
-                >{{ capacityCluster }}</span>
-              </h3>
-              <button
-                class="btn-link"
-                type="button"
-                @click="goTo(PAGE_TYPES.PROJECTS)"
-              >
-                Projects <i class="icon icon-chevron-right" />
-              </button>
-            </div>
-            <GpuCapacityPanel :summary="overview ? overview.capacity : null" />
-          </section>
-
           <!-- Active Blueprints -->
           <section class="panel">
             <div class="panel-header">
@@ -434,7 +384,7 @@ onUnmounted(() => {
               <button
                 class="btn-link"
                 type="button"
-                @click="goTo(PAGE_TYPES.CATALOG, { tab: 'application' })"
+                @click="goTo(PAGE_TYPES.BLUEPRINTS)"
               >
                 View all <i class="icon icon-chevron-right" />
               </button>
@@ -462,20 +412,6 @@ onUnmounted(() => {
             </ul>
           </section>
 
-          <!-- Projects -->
-          <section class="panel">
-            <div class="panel-header">
-              <h3>Projects</h3>
-              <button
-                class="btn-link"
-                type="button"
-                @click="goTo(PAGE_TYPES.PROJECTS)"
-              >
-                View all <i class="icon icon-chevron-right" />
-              </button>
-            </div>
-            <ProjectsPanel :projects="overview ? overview.projects : []" />
-          </section>
         </div>
       </template>
     </div>
@@ -495,7 +431,7 @@ onUnmounted(() => {
 // ── Summary cards ──────────────────────────────────────────────────────────────
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 24px;
 

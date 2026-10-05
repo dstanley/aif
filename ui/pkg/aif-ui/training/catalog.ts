@@ -3,11 +3,14 @@
 // clusters). A blueprint an inference profile wraps is shown through that profile unless the user
 // has asked to see wrapped blueprints too; the profile's card still offers the blueprint's own
 // multi-cluster install. Apps, from the operator's curated catalog, are applications too, when the
-// user shows them.
+// user shows them. The Blueprints tab lists every blueprint, wrapped or not, by itself.
 
 import type { Profile } from './profiles';
 
 export type CatalogKind = 'training' | 'inference' | 'application';
+
+/** A Catalog tab: all, one kind, or every blueprint. */
+export type CatalogTab = '' | CatalogKind | 'blueprint';
 
 export interface CatalogBlueprint {
   family: string; // the operator's blueprint name, what profiles refer to
@@ -113,6 +116,15 @@ export function catalogItems(profiles: Profile[], blueprints: CatalogBlueprint[]
 
 export interface CatalogFilter { text: string; status: '' | 'ready' | 'beta' }
 
+/**
+ * What a tab lists before the text and status filter. The kind tabs show the catalog as it is;
+ * the Blueprints tab is where a blueprint is found by itself, so it lists every one, the blueprints
+ * a profile wraps included, and nothing else.
+ */
+export function tabItems(tab: CatalogTab, items: CatalogItem[], blueprints: CatalogBlueprint[]): CatalogItem[] {
+  return tab === 'blueprint' ? catalogItems([], blueprints, true) : items.filter((i) => !tab || i.kind === tab);
+}
+
 export function filterCatalog(items: CatalogItem[], kind: '' | CatalogKind, f: CatalogFilter): CatalogItem[] {
   const q = f.text.trim().toLowerCase();
 
@@ -130,12 +142,15 @@ export function catalogSections(items: CatalogItem[]): { key: string; title: str
   const rest = items.filter((i) => !validate.includes(i));
 
   return [
-    { key: 'run', title: validate.length ? 'Deploy' : '', collapsible: false, items: rest },
+    { key: 'run', title: validate.length ? 'Run or deploy' : '', collapsible: false, items: rest },
     { key: 'validate', title: 'Validate your environment', collapsible: true, items: validate },
   ].filter((s) => s.items.length);
 }
 
-/** What a card's main button says. */
+/**
+ * What a card's main button says. A training profile starts a job, which runs and ends; "Deploy" is
+ * for what stays up: inference endpoints, blueprints and apps.
+ */
 export function deployLabel(i: CatalogItem): string {
-  return i.purpose === 'test' ? 'Run test' : i.purpose === 'benchmark' ? 'Run benchmark' : 'Deploy';
+  return i.purpose === 'test' ? 'Run test' : i.purpose === 'benchmark' ? 'Run benchmark' : i.kind === 'training' ? 'Run' : 'Deploy';
 }

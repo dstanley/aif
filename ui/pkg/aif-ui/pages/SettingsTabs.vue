@@ -1,23 +1,19 @@
 <script lang="ts" setup>
-// Settings: what an administrator configures, one tab each. General (registries, repositories,
-// Fleet), Projects & Quotas (who may use how much GPU), Blueprints (authoring and catalog sources)
-// and Compute Profiles (the training and inference configurations the Catalog offers). The tab is in
-// the URL, so a link opens it.
+// Settings: what an administrator configures once for every cluster, one tab each. General
+// (registries and their credentials, repositories, Fleet) and Blueprints (authoring and catalog
+// sources). The tab is in the URL, so a link opens it.
 import { computed, getCurrentInstance } from 'vue';
 import Checkbox from '@components/Form/Checkbox/Checkbox.vue';
 import Settings from './Settings.vue';
 import Blueprints from './Blueprints.vue';
-import Projects from '../training/pages/Projects.vue';
-import Profiles from '../training/pages/Profiles.vue';
 import { CATALOG_SHOW_WRAPPED, getPref, setPref } from '../training/prefs';
 
 const vm = getCurrentInstance()!.proxy as any;
 // Rancher's t() HTML-escapes and Vue escapes again, so labels are read raw: & would show as &amp;
+// Projects & Quotas and Compute Profiles are per cluster: each cluster's AI Training section has them.
 const TABS = [
   { key: '', labelKey: 'suseai.pages.settings.tabs.general' },
-  { key: 'projects', labelKey: 'suseai.pages.settings.tabs.projects' },
   { key: 'blueprints', labelKey: 'suseai.pages.settings.tabs.blueprints' },
-  { key: 'profiles', labelKey: 'suseai.pages.settings.tabs.profiles' },
 ];
 const tab = computed(() => (TABS.some((t) => t.key === vm.$route.query.tab) ? String(vm.$route.query.tab) : ''));
 const showWrapped = computed({
@@ -42,11 +38,7 @@ const showWrapped = computed({
         {{ t(tb.labelKey, {}, true) }}
       </router-link>
     </nav>
-    <Projects
-      v-if="tab === 'projects'"
-      embedded
-    />
-    <template v-else-if="tab === 'blueprints'">
+    <template v-if="tab === 'blueprints'">
       <div class="st-option">
         <Checkbox
           v-model:value="showWrapped"
@@ -58,10 +50,6 @@ const showWrapped = computed({
       </div>
       <Blueprints embedded />
     </template>
-    <Profiles
-      v-else-if="tab === 'profiles'"
-      embedded
-    />
     <Settings
       v-else
       embedded

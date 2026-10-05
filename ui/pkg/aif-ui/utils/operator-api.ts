@@ -51,11 +51,6 @@ export function listAIWorkloads(): Promise<{ items: AIWorkload[] }> {
   return operatorFetch('/api/v1/aiworkloads');
 }
 
-/** AIJobs: the records of training runs, across namespaces. Empty where the operator has none. */
-export function listAIJobs(): Promise<{ items: any[] }> {
-  return operatorFetch('/api/v1/aijobs');
-}
-
 export function deleteAIWorkload(namespace: string, name: string): Promise<void> {
   return operatorFetch(
     `/api/v1/namespaces/${ encodeURIComponent(namespace) }/aiworkloads/${ encodeURIComponent(name) }`,
