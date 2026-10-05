@@ -59,6 +59,7 @@ gpu:
   # auto          — device-plugin if any node advertises nvidia.com/gpu, else dra (resolved at install)
   # device-plugin — request nvidia.com/gpu (the NVIDIA GPU Operator's device plugin)
   # dra           — request a ResourceClaim against a DeviceClass (e.g. gpu.nvidia.com)
+  # none          — no GPU: a CPU-only run (job.gpusPerNode is then the processes per node)
   mode: auto
   resourceName: nvidia.com/gpu
   deviceClassName: gpu.nvidia.com

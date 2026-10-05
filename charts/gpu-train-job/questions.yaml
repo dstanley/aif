@@ -78,9 +78,9 @@ questions:
   # ---- GPU ---------------------------------------------------------------
   - variable: gpu.mode
     label: GPU request mode
-    description: auto detects how this cluster exposes GPUs; override only if you know you need device-plugin (nvidia.com/gpu) or dra (ResourceClaim).
+    description: auto detects how this cluster exposes GPUs; override only if you know you need device-plugin (nvidia.com/gpu) or dra (ResourceClaim). none runs on CPUs only.
     type: enum
-    options: [auto, device-plugin, dra]
+    options: [auto, device-plugin, dra, none]
     default: auto
     group: GPU
   - variable: gpu.deviceClassName

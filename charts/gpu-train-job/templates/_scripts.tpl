@@ -39,24 +39,28 @@ p.add_argument("--report-seconds", type=int, default=envint("REPORT_SECONDS", 15
 p.add_argument("--matmul-n", type=int, default=envint("MATMUL_N", 4096))
 a, _ = p.parse_known_args()
 if not a.max_steps and not a.run_seconds: a.max_steps = 20   # MAX_STEPS=0 with no budget is not "forever"
-dist.init_process_group("nccl")
+# NCCL on GPUs; Gloo on CPUs, so the demo also runs a CPU-only job (gpu.mode=none)
+gpu = torch.cuda.is_available()
+dev = "cuda" if gpu else "cpu"
+sync = torch.cuda.synchronize if gpu else (lambda: None)
+dist.init_process_group("nccl" if gpu else "gloo")
 rank, world, local = dist.get_rank(), dist.get_world_size(), int(os.environ["LOCAL_RANK"])
-torch.cuda.set_device(local)
+if gpu: torch.cuda.set_device(local)
 # Several ranks: the interesting number is what the fabric does between them. One rank: there is no
 # peer, an all-reduce moves nothing and reports 0 GB/s, so measure the GPU itself instead. Same
 # budget, same progress lines, a number a single-card demo can show.
 if world > 1:
-    x = torch.ones(a.size_mb * 1024 * 1024 // 4, device="cuda")
+    x = torch.ones(a.size_mb * 1024 * 1024 // 4, device=dev)
     step = lambda: dist.all_reduce(x)
     per_step, unit, what = 2 * (world - 1) / world * a.size_mb / 1024, "GB/s busbw", f"all-reduce {a.size_mb}MB"
 else:
-    m = torch.randn(a.matmul_n, a.matmul_n, device="cuda"); out = torch.empty_like(m)
+    m = torch.randn(a.matmul_n, a.matmul_n, device=dev); out = torch.empty_like(m)
     step = lambda: torch.mm(m, m, out=out)
     per_step, unit, what = 2 * a.matmul_n ** 3 / 1e12, "TFLOP/s", f"matmul {a.matmul_n}x{a.matmul_n}"
-step(); torch.cuda.synchronize()   # warm-up: NCCL builds its rings, cuBLAS picks its kernel
+step(); sync()   # warm-up: NCCL builds its rings, cuBLAS picks its kernel
 if rank == 0: print(f"world={world} {what} steps={a.max_steps or 'unbounded'} budget={str(a.run_seconds) + 's' if a.run_seconds else 'none'}", flush=True)
 t0 = last = time.time(); steps = last_steps = 0
-stop = torch.zeros(1, device="cuda")
+stop = torch.zeros(1, device=dev)
 while True:
     # One clock, broadcast. NCCL matches collectives by call order, so if each rank decided for
     # itself when the budget was up, the first one out would leave the others in an all-reduce that
@@ -71,7 +75,7 @@ while True:
     # the run, and once the backlog is deeper than NCCL's 10-minute watchdog timeout the queued
     # collective is declared hung and the job is killed. Seen on three A2s over TCP, where a 512 MB
     # all-reduce takes over a second and a 600 s budget queued 1000 of them.
-    torch.cuda.synchronize(); steps += 1
+    sync(); steps += 1
     if rank == 0 and a.report_seconds and time.time() - last >= a.report_seconds:
         now = time.time()
         print(f"  step {steps} elapsed {now - t0:.0f}s {per_step * (steps - last_steps) / (now - last):.2f} {unit}", flush=True)

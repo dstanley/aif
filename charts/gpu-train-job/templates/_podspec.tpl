@@ -140,7 +140,12 @@ priorityClassName: {{ . | quote }}
 nodeSelector:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- with .Values.tolerations }}
+{{- /* a CPU-only run does not tolerate the GPU nodes' taint: it should not take their CPUs */}}
+{{- $tol := list }}
+{{- range .Values.tolerations }}
+  {{- if not (and (eq $.Values.gpu.mode "none") (eq (toString .key) $.Values.gpu.resourceName)) }}{{ $tol = append $tol . }}{{ end }}
+{{- end }}
+{{- with $tol }}
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
