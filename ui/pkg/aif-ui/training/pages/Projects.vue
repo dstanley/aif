@@ -7,11 +7,14 @@ import LabeledInput from '@components/Form/LabeledInput/LabeledInput.vue';
 import LabeledSelect from '@shell/components/form/LabeledSelect.vue';
 import AsyncButton from '@shell/components/AsyncButton.vue';
 import ChartRepoBanner from '../components/ChartRepoBanner.vue';
+import ProjectPlacementPanel from '../components/ProjectPlacementPanel.vue';
+import { placedClusters } from '../placement';
+import { getAllClusters } from '../../services/rancher-apps';
 import { CapacitySummary, ProjectUsage, capacitySummary, gpuModels } from '../capacity';
 import {
   GPU_RESOURCE, SUBMIT_PAGE, TYPES
 } from '../config';
-import { trainingLink } from '../section';
+import { CLUSTER_PAGES, CLUSTER_PRODUCT, trainingLink } from '../section';
 import { loadClusterLabel } from '../cluster';
 import {
   ClusterCapacity, QueueIndex, QuotaIssue, auditQuotas, buildQueueIndex, clusterCapacity,
@@ -44,7 +47,7 @@ export default defineComponent({
   // Set when the page is the Projects & Quotas tab of Settings: the tab strip carries the title.
   props:      { embedded: { type: Boolean, default: false } },
   components: {
-    Loading, Banner, BadgeState, LabeledInput, LabeledSelect, AsyncButton, ChartRepoBanner
+    Loading, Banner, BadgeState, LabeledInput, LabeledSelect, AsyncButton, ChartRepoBanner, ProjectPlacementPanel
   },
 
   data() {
@@ -55,6 +58,12 @@ export default defineComponent({
       // user and role names for the members: bindings hold ids
       userNames: {} as Record<string, string>,
       roleNames: {} as Record<string, string>,
+      // every Rancher project and member binding (all clusters), for placing a project on others
+      rawProjects: [] as any[],
+      rawBindings: [] as any[],
+      // the project whose placement panel is open
+      placing:     null as any,
+      clusterNames: {} as Record<string, string>,
       // queues without a project, and the scheduler default: plumbing, closed by default
       showAdvanced: false,
       projects:            [] as AiProject[],
@@ -78,6 +87,9 @@ export default defineComponent({
       backend:             'resourcequota' as QuotaBackend,
       error:               '',
       notice:              '',
+      // the project whose ⋯ menu is open
+      menuFor:             '',
+      noticeTimer:         null as ReturnType<typeof setTimeout> | null,
       fetchErrors:         [] as string[],
       canCreate:           false,
       canAdopt:            false,
@@ -116,12 +128,31 @@ export default defineComponent({
 
   mounted() {
     this.timer = setInterval(() => this.load(), 30000);
+    document.addEventListener('click', this.closeMenu);
   },
 
   beforeUnmount() {
     if (this.timer) {
       clearInterval(this.timer);
     }
+    if (this.noticeTimer) {
+      clearTimeout(this.noticeTimer);
+    }
+    document.removeEventListener('click', this.closeMenu);
+  },
+
+  watch: {
+    // a success message is a notification: it can be closed, and goes by itself after a while
+    notice(v: string) {
+      if (this.noticeTimer) {
+        clearTimeout(this.noticeTimer);
+      }
+      if (v) {
+        this.noticeTimer = setTimeout(() => {
+          this.notice = '';
+        }, 8000);
+      }
+    },
   },
 
   computed: {
@@ -323,6 +354,56 @@ export default defineComponent({
   },
 
   methods: {
+    closeMenu() {
+      this.menuFor = '';
+    },
+    /** A project's administrative actions, for its ⋯ menu; the row itself only expands its details. */
+    projectActions(p: AiProject): { key: string; label: string }[] {
+      const out: { key: string; label: string }[] = [];
+
+      if (p.source === 'no-queue' && this.hasGuarantees && this.canCreate) {
+        out.push({ key: 'scheduling', label: 'Configure GPU scheduling' });
+      } else if (this.canEditQuota && this.quotaTargetOf(p)) {
+        out.push({ key: 'quota', label: 'Edit GPU quota' });
+      }
+      if (p.rancherProjectId && p.source !== 'no-rancher-project' && !this.hasCredentials(p)) {
+        out.push({ key: 'credentials', label: 'Provide registry credentials' });
+      }
+      if (this.rancherProjectOf(p)) {
+        out.push({ key: 'place', label: 'Place on clusters…' });
+      }
+      if (p.rancherProjectId) {
+        out.push({ key: 'rancher', label: 'Manage in Rancher' });
+      }
+
+      return out;
+    },
+    projectAct(p: AiProject, key: string) {
+      this.menuFor = '';
+      if (key === 'scheduling') {
+        this.configureScheduling(p);
+      } else if (key === 'quota') {
+        this.startEditQuota(p);
+        this.scrollToEditor();
+      } else if (key === 'credentials') {
+        this.enableCredentials(p);
+      } else if (key === 'place') {
+        this.placing = p;
+      } else if (key === 'rancher') {
+        this.$router.push(this.projectsNamespacesRoute);
+      }
+    },
+    /** "2 users · 1 group · 3 role assignments": who is in the project, without listing every binding. */
+    membersSummary(p: AiProject): string {
+      if (!p.members.length) {
+        return '—';
+      }
+      const users = new Set(p.members.filter((m) => m.kind === 'user').map((m) => m.name)).size;
+      const groups = new Set(p.members.filter((m) => m.kind === 'group').map((m) => m.name)).size;
+      const parts = [users ? `${ users } user${ users === 1 ? '' : 's' }` : '', groups ? `${ groups } group${ groups === 1 ? '' : 's' }` : ''].filter(Boolean);
+
+      return `${ parts.join(' · ') } · ${ p.members.length } role assignment${ p.members.length === 1 ? '' : 's' }`;
+    },
     /** Whether AI Factory hands this project the registry credentials (it is an AI project). */
     hasCredentials(p: AiProject): boolean {
       const short = shortProjectId(p.rancherProjectId);
@@ -347,7 +428,7 @@ export default defineComponent({
           data:    { metadata: { labels: { [AI_PROJECT_LABEL]: 'true' } } },
         });
         this.credentialProjects = [...this.credentialProjects, short];
-        this.notice = `${ p.displayName } now receives the registry credentials configured in AI Factory as the pull secret suse-ai-pull-combined in each of its namespaces.`;
+        this.notice = `Registry credentials configured for ${ p.displayName }. Credentials are available to workloads in the project's namespaces.`;
       } catch (e: any) {
         this.error = `Could not enable registry credentials for ${ p.displayName }: ${ e?.message || e?.data?.message || e }`;
       }
@@ -475,6 +556,11 @@ export default defineComponent({
           this.userNames = userNamesFrom(users);
           this.roleNames = roleNamesFrom(roles);
         }).catch(() => {});
+        this.rawProjects = rancherProjects;
+        getAllClusters(this.$store).then((cs) => {
+          this.clusterNames = Object.fromEntries(cs.map((c) => [c.id, c.name]));
+        }).catch(() => {});
+        this.rawBindings = prtbs;
         this.projects = assembleProjects(
           rancherProjects.filter((p: any) => p.metadata?.namespace === this.clusterId),
           namespaces,
@@ -507,6 +593,31 @@ export default defineComponent({
       } finally {
         this.refreshing = false;
       }
+    },
+
+    /** The Rancher project behind a row, for its placement. */
+    rancherProjectOf(p: AiProject): any {
+      return this.rawProjects.find((x: any) => `${ x.metadata?.namespace }:${ x.metadata?.name }` === p.rancherProjectId) || null;
+    },
+    /** How this cluster schedules the project's runs. Each cluster's own Projects and Quotas page
+     * says how it schedules its copy; the placement links there. */
+    schedulingText(p: AiProject): string {
+      return p.queue ? `Queue ${ p.queue }${ p.department ? ` · parent ${ p.department }` : '' }` : 'Default scheduling · no dedicated queue or GPU quota';
+    },
+    /** The clusters a project is placed on, each linking to that cluster's Projects and Quotas. */
+    placementLinks(p: AiProject): { id: string; name: string; here: boolean; to: any }[] {
+      const rp = this.rancherProjectOf(p);
+      const home = rp?.metadata?.namespace || this.clusterId;
+
+      return (rp ? placedClusters(rp) : []).map((id) => ({
+        id,
+        name: this.clusterNames[id] || id,
+        here: id === home,
+        to:   { name: `c-cluster-${ CLUSTER_PRODUCT }-${ CLUSTER_PAGES.PROJECTS }`, params: { cluster: id } },
+      }));
+    },
+    toggleDetails(p: AiProject) {
+      this.openDetails[p.id] = !this.openDetails[p.id];
     },
 
     /** The quota editor opens above the projects; bring it into view from a row below them. */
@@ -1032,14 +1143,8 @@ export default defineComponent({
         <h1 v-if="!embedded">
           Projects &amp; Quotas
         </h1>
-        <p class="text-muted ap-lede">
-          {{ t('trainingjobs.projects.lede') }}
-        </p>
-        <p
-          v-if="clusterName"
-          class="text-muted ap-cluster"
-        >
-          Projects and quotas on <strong>{{ clusterName }}</strong>
+        <p class="ap-lede">
+          Configure GPU quotas and scheduling policies for projects on this cluster.
         </p>
       </div>
     </header>
@@ -1057,6 +1162,8 @@ export default defineComponent({
       v-if="notice"
       color="success"
       :label="notice"
+      closable
+      @close="notice = ''"
     />
 
     <!-- ===================== outside project accounting ===================== -->
@@ -1462,10 +1569,11 @@ export default defineComponent({
         Projects
         <span
           v-if="projectRows.length"
-          class="ap-quota-total text-muted"
+          class="ap-quota-total ap-secondary"
         >
-          {{ fmt(committedGpu) }}<span v-if="hasUnlimitedLeaf"> + ∞</span> GPU
-          {{ hasGuarantees ? 'guaranteed' : 'in limits' }} in total
+          {{ projectRows.length }} project{{ projectRows.length === 1 ? '' : 's' }} ·
+          <template v-if="projectRows.every(p => p.source === 'no-queue')">No GPU quotas configured</template>
+          <template v-else>{{ fmt(committedGpu) }}<span v-if="hasUnlimitedLeaf"> + ∞</span> GPU {{ hasGuarantees ? 'guaranteed' : 'in limits' }}</template>
         </span>
         <!-- beside the list they act on -->
         <span class="ap-header-actions">
@@ -1477,10 +1585,13 @@ export default defineComponent({
             <i class="icon icon-plus mr-5" /> {{ runaiInstalled ? 'Add project' : 'New project' }}
           </button>
           <button
-            class="btn role-secondary"
+            v-clean-tooltip="'Refresh'"
+            type="button"
+            class="btn role-tertiary ap-icon-button"
+            aria-label="Refresh"
             @click="load()"
           >
-            <i class="icon icon-refresh mr-5" /> Refresh
+            <i class="icon icon-refresh" />
           </button>
         </span>
       </h2>
@@ -1494,10 +1605,12 @@ export default defineComponent({
             <th v-if="runaiInstalled">
               Run:AI
             </th>
-            <th>GPU entitlement</th>
+            <th>GPU quota</th>
             <th>Current usage</th>
             <th>Jobs</th>
-            <th />
+            <th class="ap-actions">
+              <span class="ap-sr">Actions</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1511,7 +1624,7 @@ export default defineComponent({
                   type="button"
                   class="ap-name ap-name-toggle"
                   :aria-expanded="!!openDetails[p.id]"
-                  @click="openDetails[p.id] = !openDetails[p.id]"
+                  @click="toggleDetails(p)"
                 >
                   <i :class="['icon', openDetails[p.id] ? 'icon-chevron-down' : 'icon-chevron-right']" />
                   {{ p.displayName }}
@@ -1522,23 +1635,12 @@ export default defineComponent({
                   :label="sourceLabelFor(p)"
                   class="ap-badge"
                 />
-                <template v-else-if="p.rancherProjectId">
-                  <BadgeState
-                    v-if="hasCredentials(p)"
-                    v-clean-tooltip="'AI Factory\'s registry credentials are copied into each namespace of this project as suse-ai-pull-combined'"
-                    color="bg-success"
-                    label="Registry credentials"
-                    class="ap-badge"
-                  />
-                  <button
-                    v-else
-                    type="button"
-                    class="btn-sm role-link ap-cred"
-                    @click="enableCredentials(p)"
-                  >
-                    Provide registry credentials
-                  </button>
-                </template>
+                <div
+                  v-else-if="p.rancherProjectId && !hasCredentials(p)"
+                  class="ap-sub ap-cred-missing"
+                >
+                  No registry credentials
+                </div>
               </td>
               <td v-if="runaiInstalled">
                 <BadgeState
@@ -1549,9 +1651,9 @@ export default defineComponent({
               </td>
               <td>
                 <template v-if="p.source === 'no-queue'">
-                  <div>GPU scheduling not configured</div>
-                  <div class="text-muted ap-sub">
-                    Workloads use the cluster's default scheduling.
+                  <div>Default scheduling</div>
+                  <div class="ap-sub ap-secondary">
+                    No GPU quota configured
                   </div>
                 </template>
                 <template v-else>
@@ -1602,22 +1704,42 @@ export default defineComponent({
                 >—</span>
               </td>
               <td class="ap-actions">
-                <button
-                  v-if="p.source === 'no-queue' && hasGuarantees && canCreate"
-                  class="btn role-secondary btn-sm"
-                  :disabled="busy === p.id"
-                  @click="configureScheduling(p)"
+                <div
+                  v-if="projectActions(p).length"
+                  class="ap-menu"
+                  @click.stop
                 >
-                  Configure GPU scheduling
-                </button>
-                <button
-                  v-else-if="canEditQuota && quotaTargetOf(p)"
-                  class="btn role-primary btn-sm"
-                  :disabled="editing && editing.queue === quotaTargetOf(p)"
-                  @click="startEditQuota(p)"
-                >
-                  Edit
-                </button>
+                  <button
+                    type="button"
+                    class="ap-menu-button"
+                    :aria-label="`Actions for ${ p.displayName }`"
+                    :aria-expanded="menuFor === p.id"
+                    :disabled="busy === p.id"
+                    @click="menuFor = menuFor === p.id ? '' : p.id"
+                  >
+                    <i class="icon icon-actions" />
+                  </button>
+                  <ul
+                    v-if="menuFor === p.id"
+                    class="ap-menu-list"
+                    role="menu"
+                  >
+                    <li
+                      v-for="a in projectActions(p)"
+                      :key="a.key"
+                      role="none"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="ap-menu-item"
+                        @click="projectAct(p, a.key)"
+                      >
+                        {{ a.label }}
+                      </button>
+                    </li>
+                  </ul>
+                </div>
               </td>
             </tr>
             <tr
@@ -1627,19 +1749,39 @@ export default defineComponent({
               <td :colspan="runaiInstalled ? 6 : 5">
                 <dl class="ap-details">
                   <div>
-                    <dt>Namespaces</dt>
+                    <dt>Namespace{{ p.namespaces.length === 1 ? '' : 's' }}</dt>
                     <dd>{{ p.namespaces.join(', ') || '—' }}</dd>
+                  </div>
+                  <div v-if="rancherProjectOf(p)">
+                    <dt>Cluster placement</dt>
+                    <dd>
+                      <template
+                        v-for="(c, i) in placementLinks(p)"
+                        :key="c.id"
+                      >
+                        <span v-if="c.here">{{ c.name }} (this cluster)</span>
+                        <router-link
+                          v-else
+                          :to="c.to"
+                        >
+                          {{ c.name }}
+                        </router-link>{{ i < placementLinks(p).length - 1 ? ', ' : '' }}
+                      </template>
+                    </dd>
                   </div>
                   <div>
                     <dt>Members</dt>
-                    <dd>{{ p.members.length ? p.members.map(m => memberLabel(m, userNames, roleNames)).join(', ') : '—' }}</dd>
-                  </div>
-                  <div v-if="p.queue">
-                    <dt>Advanced scheduling</dt>
                     <dd>
-                      Queue {{ p.queue }}<template v-if="p.department">
-                        · parent {{ p.department }}
-                      </template>
+                      <span
+                        v-clean-tooltip="p.members.length ? p.members.map(m => memberLabel(m, userNames, roleNames)).join('<br>') : ''"
+                        class="ap-members"
+                      >{{ membersSummary(p) }}</span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Scheduling</dt>
+                    <dd>
+                      {{ schedulingText(p) }}
                     </dd>
                   </div>
                 </dl>
@@ -1750,15 +1892,17 @@ export default defineComponent({
       :label="'Some data could not be read: ' + fetchErrors.join('; ')"
     />
 
-    <p class="text-muted ap-footer">
-      <router-link :to="submitRoute">
-        Submit a job
-      </router-link>
-      into a project. Projects and Namespaces are managed in
-      <router-link :to="projectsNamespacesRoute">
-        Cluster → Projects/Namespaces → Members
-      </router-link>.
-    </p>
+    <ProjectPlacementPanel
+      v-if="placing && rancherProjectOf(placing)"
+      :source="rancherProjectOf(placing)"
+      :namespaces="placing.namespaces"
+      :projects="rawProjects"
+      :bindings="rawBindings"
+      :user-names="userNames"
+      :role-names="roleNames"
+      @close="placing = null"
+      @applied="load()"
+    />
   </div>
 </template>
 
@@ -1780,7 +1924,8 @@ export default defineComponent({
 
 .ai-projects { padding: 20px; }
 .ap-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; h1 { margin-bottom: 0; } }
-.ap-title { display: flex; align-items: center; gap: 8px; }
+.ap-title { display: block; }
+.ap-lede { margin: 4px 0 0; font-size: 15px; opacity: 0.8; }
 .ap-version { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; cursor: help; }
 .ap-header-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; font-size: 14px; font-weight: normal; }
 .ap-capacity { display: flex; gap: 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--border-radius); margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
@@ -1835,9 +1980,6 @@ export default defineComponent({
 .ap-bar { position: relative; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
 .ap-bar-quota { position: absolute; inset: 0 auto 0 0; background: var(--primary); opacity: 0.25; }
 .ap-bar-used { position: absolute; inset: 0 auto 0 0; background: var(--primary); }
-.ap-footer { margin-top: 18px; font-size: 12px; }
-.ap-lede { margin: 4px 0 0; }
-.ap-cluster { margin: 2px 0 0; font-size: 13px; }
 .ap-name-toggle {
   background: none;
   border: 0;
@@ -1852,14 +1994,27 @@ export default defineComponent({
 .ap-details-row td { background: var(--sortable-table-accent-bg, var(--body-bg)); }
 .ap-details {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 8px 24px;
+  gap: 8px;
   margin: 0;
-  padding: 4px 0 4px 18px;
+  padding: 6px 0 6px 22px;
+  max-width: 900px;
 
-  dt { color: var(--muted); font-size: 12px; }
+  // label | value, two columns
+  > div { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: baseline; }
+  dt { font-size: 13px; font-weight: 600; opacity: 0.75; }
   dd { margin: 0; }
 }
+.ap-members { cursor: help; border-bottom: 1px dotted currentColor; }
+.ap-secondary { opacity: 0.72; }
+.ap-cred-missing { color: var(--warning); margin-top: 2px; }
+.ap-icon-button { padding: 0 10px; min-width: 0; }
+.ap-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.ap-menu { position: relative; display: inline-block; }
+.ap-menu-button { background: none; border: 1px solid transparent; border-radius: var(--border-radius); padding: 4px 8px; cursor: pointer; color: var(--body-text); }
+.ap-menu-button:hover, .ap-menu-button[aria-expanded="true"] { border-color: var(--border); background: var(--box-bg); }
+.ap-menu-list { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 210px; margin: 0; padding: 4px 0; list-style: none; text-align: left; background: var(--body-bg); border: 1px solid var(--border); border-radius: var(--border-radius); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
+.ap-menu-item { display: block; width: 100%; padding: 6px 14px; background: none; border: 0; text-align: left; color: var(--body-text); font-size: 14px; cursor: pointer; white-space: nowrap; }
+.ap-menu-item:hover { background: var(--box-bg); }
 .ap-advanced-toggle {
   background: none;
   border: 0;
