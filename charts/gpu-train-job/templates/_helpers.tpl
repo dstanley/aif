@@ -44,7 +44,10 @@ Resolve gpu.mode. "auto" picks device-plugin if any node advertises gpu.resource
 else dra if the DeviceClass exists. Offline (helm template) auto resolves to device-plugin.
 */}}
 {{- define "gpu-train-job.gpuMode" -}}
-{{- if and (eq .Values.scheduler.type "kai") (gt (int .Values.gpu.sharedMemoryMiB) 0) (not .Values.gpu.sharedClaim) -}}
+{{- if eq .Values.gpu.mode "none" -}}
+{{- /* CPU only: no GPU request, claim or annotation; the GPU pre-flight checks do not apply */ -}}
+none
+{{- else if and (eq .Values.scheduler.type "kai") (gt (int .Values.gpu.sharedMemoryMiB) 0) (not .Values.gpu.sharedClaim) -}}
 {{- /* A GPU-memory share under KAI: KAI places the pod on a GPU by its gpu-memory annotation and
        HAMi-core / NvFractions caps it. No whole nvidia.com/gpu and no DRA claim: KAI rejects a pod
        that mixes a fraction with a whole-GPU request. */ -}}

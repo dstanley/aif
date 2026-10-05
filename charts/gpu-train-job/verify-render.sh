@@ -34,6 +34,8 @@ render_ok "pt/smoke/1node/none"      --set job.kind=pytorchjob --set job.mode=sm
 render_ok "pt/torchrun/3node/kai"    --set job.kind=pytorchjob --set job.mode=torchrun --set job.nodes=3 --set scheduler.type=kai --set scheduler.queue=training
 render_ok "pt/torchrun/3node/kueue"  --set job.kind=pytorchjob --set job.mode=torchrun --set job.nodes=3 --set scheduler.type=kueue --set scheduler.queue=lq
 render_ok "pt/dra/2node"             --set job.kind=pytorchjob --set job.nodes=2 --set gpu.mode=dra
+render_ok "job/torchrun/1node/cpu"   --set job.kind=job --set job.mode=torchrun --set gpu.mode=none
+render_ok "pt/torchrun/2node/cpu"    --set job.kind=pytorchjob --set job.mode=torchrun --set job.nodes=2 --set gpu.mode=none
 render_ok "pt/storage/2node"         --set job.kind=pytorchjob --set job.nodes=2 --set storage.datasetPVC=d --set storage.checkpointPVC=c --set storage.configMap=cm --set storage.scratchSize=10Gi
 
 echo
@@ -84,6 +86,28 @@ if printf '%s\n' "$out" | grep -q "action: FailIndex" && printf '%s\n' "$out" | 
 else
   printf '✗ %s\n' "Job: podFailurePolicy missing"; fail=1
 fi
+
+echo
+echo "CPU only (gpu.mode=none):"
+python3 - <<'PY' || fail=1
+import subprocess, sys, yaml
+ok = True
+def chk(cond, msg):
+    global ok
+    print(('✓ ' if cond else '✗ ') + msg); ok = ok and cond
+for kind in ('job', 'pytorchjob'):
+    out = subprocess.run(['helm', 'template', 't', '.', '--set', f'job.kind={kind}', '--set', 'job.mode=torchrun', '--set', 'gpu.mode=none',
+                          '--set', 'scheduler.type=kai', '--set', 'scheduler.queue=q'], capture_output=True, text=True, check=True).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    text = yaml.safe_dump_all(docs)
+    chk('nvidia.com/gpu' not in text, f"{kind}: requests no nvidia.com/gpu")
+    chk(not any(d.get('kind') == 'ResourceClaimTemplate' for d in docs), f"{kind}: no ResourceClaimTemplate")
+    chk('gpu-memory:' not in text and 'resourceClaims' not in text, f"{kind}: no KAI gpu-memory annotation, no resource claims")
+    chk('kai.scheduler/queue' in text, f"{kind}: still queued (a CPU run can wait in a KAI queue)")
+r = subprocess.run(['helm', 'template', 't', '.', '--set', 'gpu.mode=none', '--set', 'gpu.sharedMemoryMiB=4096'], capture_output=True, text=True)
+chk(r.returncode != 0 and 'gpu.mode=none runs without a GPU' in r.stderr, "a GPU share with gpu.mode=none is refused")
+sys.exit(0 if ok else 1)
+PY
 
 echo
 [ $fail -eq 0 ] && echo "chart render checks passed" || echo "chart render checks FAILED"

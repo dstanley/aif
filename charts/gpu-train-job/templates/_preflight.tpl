@@ -3,6 +3,11 @@ Install-time checks (Helm `lookup`; skipped under `helm template`). Each failure
 real cause instead of leaving a Pending pod with no events. Disable with preflight.enabled=false.
 */}}
 {{- define "gpu-train-job.preflight" -}}
+{{- if eq .Values.gpu.mode "none" }}
+  {{- if or (gt (int .Values.gpu.sharedMemoryMiB) 0) .Values.gpu.sharedClaim .Values.gpu.productName .Values.computeDomain.enabled }}
+    {{- fail "preflight: gpu.mode=none runs without a GPU; unset gpu.sharedMemoryMiB, gpu.sharedClaim, gpu.productName and computeDomain.enabled" }}
+  {{- end }}
+{{- end }}
 {{- if and (gt (int .Values.gpu.sharedMemoryMiB) 0) (not .Values.gpu.sharedClaim) (ne .Values.scheduler.type "kai") }}
   {{- fail "preflight: gpu.sharedMemoryMiB (a GPU-memory share) needs scheduler.type=kai (KAI GPU sharing) or gpu.sharedClaim (an MPS ResourceClaim under DRA)." }}
 {{- end }}
