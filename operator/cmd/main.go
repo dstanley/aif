@@ -227,7 +227,7 @@ func main() {
 			"extension chart pulls, e.g. \"harbor.example.com,ghcr.io\". Empty (default) allows all hosts.")
 	var apiBindAddr string
 	flag.StringVar(&apiBindAddr, "api-bind-address", ":8080", "The address the operator API binds to.")
-	var aijobAllowedCharts, aijobDeniedValues, aijobRepoURLOverrides, onlyControllers string
+	var aijobAllowedCharts, aijobDeniedValues, aijobRepoURLOverrides, onlyControllers, aijobAllowedClusters, aijobRemoteSecret string
 	flag.StringVar(&aijobAllowedCharts, "aijob-allowed-charts", "",
 		"Comma-separated <clusterRepo>/<chart> (or <clusterRepo>/*) that an AIJob may install. AIJobs are "+
 			"installed with the operator's service account, so set this to bound them. Empty (default) allows all.")
@@ -238,6 +238,12 @@ func main() {
 	flag.StringVar(&aijobRepoURLOverrides, "aijob-repo-url-overrides", "",
 		"Development only: comma-separated <clusterRepo>=<url> used instead of the ClusterRepo's spec.url, for "+
 			"running the operator outside the cluster where an in-cluster repository Service does not resolve.")
+	flag.StringVar(&aijobAllowedClusters, "aijob-allowed-clusters", "",
+		"Comma-separated Rancher cluster IDs (c-xxxxx) an AIJob may target besides this cluster (spec.targetCluster). "+
+			"Empty (default) runs AIJobs on this cluster only.")
+	flag.StringVar(&aijobRemoteSecret, "aijob-remote-clusters-secret", "",
+		"Name of a Secret in the operator's namespace with the Rancher url, an API token (token) and optionally "+
+			"ca.crt, used to reach the clusters in --aijob-allowed-clusters through Rancher's cluster proxy.")
 	flag.StringVar(&onlyControllers, "controllers", "",
 		"Development only: comma-separated controllers to run (installaiextension, settings, aiworkload, aijob, "+
 			"projectsecrets). "+
@@ -437,6 +443,21 @@ func main() {
 				overrides[k] = v
 			}
 		}
+		var allowedClusters []string
+		for _, c := range strings.Split(aijobAllowedClusters, ",") {
+			if c = strings.TrimSpace(c); c != "" && c != "local" {
+				allowedClusters = append(allowedClusters, c)
+			}
+		}
+		var clusters aijobctrl.ClusterConnector
+		if aijobRemoteSecret != "" {
+			// read uncached: a cached read would watch every Secret in the cluster
+			clusters = &aijobctrl.RancherProxy{Secrets: mgr.GetAPIReader(), Namespace: operatorNamespace,
+				Secret: aijobRemoteSecret, Scheme: mgr.GetScheme()}
+		} else if len(allowedClusters) > 0 {
+			setupLog.Info("WARNING: --aijob-allowed-clusters is set but --aijob-remote-clusters-secret is not: " +
+				"AIJobs that target another cluster will fail.")
+		}
 		if err := (&aijobctrl.AIJobReconciler{
 			Client:                   mgr.GetClient(),
 			Scheme:                   mgr.GetScheme(),
@@ -445,6 +466,8 @@ func main() {
 			DeniedValues:             deniedValues,
 			RepoURLOverrides:         overrides,
 			AllowInsecureRegistryTLS: allowInsecureRegistryTLS,
+			AllowedClusters:          allowedClusters,
+			Clusters:                 clusters,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "AIJob")
 			os.Exit(1)

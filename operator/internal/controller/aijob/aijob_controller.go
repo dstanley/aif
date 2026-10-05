@@ -103,6 +103,8 @@ var (
 // +kubebuilder:rbac:groups=kueue.x-k8s.io,resources=localqueues;clusterqueues,verbs=get;list
 // +kubebuilder:rbac:groups=scheduling.run.ai,resources=queues,verbs=get;list
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=deviceclasses;resourceslices,verbs=get;list
+// The remote clusters Secret (url, token, ca.crt) in the operator's namespace, read uncached.
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 // AIJobReconciler reconciles AIJob objects.
 type AIJobReconciler struct {
@@ -130,6 +132,12 @@ type AIJobReconciler struct {
 	// AllowInsecureRegistryTLS lets an AIJob pull from a ClusterRepo that sets
 	// insecureSkipTLSVerify, as the operator's other chart pulls; off refuses it.
 	AllowInsecureRegistryTLS bool
+
+	// AllowedClusters are the Rancher cluster IDs an AIJob may target besides
+	// this one (spec.targetCluster). Empty allows only this cluster.
+	AllowedClusters []string
+	// Clusters reaches the other clusters; nil allows only this one.
+	Clusters ClusterConnector
 
 	// HelmFor builds the Helm client for a namespace; nil uses the real one.
 	HelmFor func(namespace string) (helmClient.HelmClient, error)
@@ -175,13 +183,9 @@ func (r *AIJobReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	logger := log.FromContext(ctx).WithValues("aijob", req.NamespacedName)
 	ctx = log.IntoContext(ctx, logger)
 
-	helm, err := r.helm(job.Namespace)
-	if err != nil {
-		return reconcile.Result{}, err
-	}
-
+	tgt, terr := r.target(ctx, job)
 	if !job.DeletionTimestamp.IsZero() {
-		return reconcile.Result{}, r.finalize(ctx, job, helm)
+		return reconcile.Result{}, r.finalize(ctx, job, tgt, terr)
 	}
 	if controllerutil.AddFinalizer(job, finalizer) {
 		if err := r.Update(ctx, job); err != nil {
@@ -190,7 +194,16 @@ func (r *AIJobReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	}
 
 	before := job.DeepCopy()
-	result, rerr := r.reconcileJob(ctx, job, helm)
+	var result reconcile.Result
+	var rerr error
+	if terr != nil {
+		result = r.targetProblem(job, terr)
+	} else {
+		var helm helmClient.HelmClient
+		if helm, rerr = tgt.Helm(job.Namespace); rerr == nil {
+			result, rerr = r.reconcileJob(ctx, job, tgt, helm)
+		}
+	}
 	if rerr == nil {
 		job.Status.ObservedGeneration = job.Generation
 	}
@@ -205,9 +218,13 @@ func (r *AIJobReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 	return result, rerr
 }
 
-func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob, helm helmClient.HelmClient) (reconcile.Result, error) {
+func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob, tgt *Target, helm helmClient.HelmClient) (reconcile.Result, error) {
 	st := &job.Status
 	gen := job.Generation
+	st.Cluster = tgt.Cluster
+	if tgt.Cluster != localCluster {
+		setCondition(st, gen, v1alpha1.AIJobConditionTargetReachable, metav1.ConditionTrue, "Connected", "reached cluster "+tgt.Cluster+" through Rancher")
+	}
 	if st.SubmittedAt == nil {
 		t := job.CreationTimestamp
 		st.SubmittedAt = &t
@@ -229,17 +246,17 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 			r.fail(job, "ReleaseConflict", "release "+job.Name+" already exists in "+job.Namespace+
 				" and was not installed by this AIJob; choose another name")
 		}
-		return r.afterCompletion(ctx, job, helm, false)
+		return r.afterCompletion(ctx, job, tgt, helm, false)
 	}
 	installed := release != nil
 
 	// Cancel: only meaningful before the job ends.
 	if job.Spec.Cancel && !st.Phase.IsTerminal() {
-		return r.cancel(ctx, job, helm, installed)
+		return r.cancel(ctx, job, tgt, helm, installed)
 	}
 
 	if st.Phase.IsTerminal() {
-		return r.afterCompletion(ctx, job, helm, installed)
+		return r.afterCompletion(ctx, job, tgt, helm, installed)
 	}
 
 	if !installed {
@@ -255,7 +272,7 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 				if err != nil {
 					return reconcile.Result{}, fmt.Errorf("look up release: %w", err)
 				}
-				return r.afterCompletion(ctx, job, helm, rel != nil && ownsRelease(rel, job.Name))
+				return r.afterCompletion(ctx, job, tgt, helm, rel != nil && ownsRelease(rel, job.Name))
 			}
 			return res, nil
 		}
@@ -263,7 +280,7 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 	}
 	setCondition(st, gen, v1alpha1.AIJobConditionInstalled, metav1.ConditionTrue, "Installed", "release "+job.Name+" is installed")
 
-	obs, err := r.observe(ctx, job)
+	obs, err := r.observe(ctx, job, tgt.Reader)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -296,12 +313,12 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 			if obs.execution != nil {
 				execution = obs.execution
 			}
-			r.captureReport(ctx, job, execution, obs.pods)
+			r.captureReport(ctx, job, tgt.Logs, execution, obs.pods)
 		}
 		st.Phase = phase
 		setCondition(st, gen, v1alpha1.AIJobConditionCompleted, metav1.ConditionTrue, string(phase), st.Result.Message)
 		r.event(job, corev1.EventTypeNormal, string(phase), "the job "+strings.ToLower(string(phase)))
-		return r.afterCompletion(ctx, job, helm, true)
+		return r.afterCompletion(ctx, job, tgt, helm, true)
 	}
 	st.Phase = phase
 
@@ -316,7 +333,7 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 			t := metav1.NewTime(r.now())
 			st.CompletedAt = &t
 		}
-		return r.afterCompletion(ctx, job, helm, true)
+		return r.afterCompletion(ctx, job, tgt, helm, true)
 	}
 	setCondition(st, gen, v1alpha1.AIJobConditionCompleted, metav1.ConditionFalse, "InProgress", "")
 	// Only a job Kueue is holding can wait long; anything else installed is about
@@ -367,11 +384,30 @@ func (r *AIJobReconciler) fail(job *v1alpha1.AIJob, reason, msg string) {
 	r.event(job, corev1.EventTypeWarning, reason, msg)
 }
 
-func (r *AIJobReconciler) cancel(ctx context.Context, job *v1alpha1.AIJob, helm helmClient.HelmClient, installed bool) (reconcile.Result, error) {
+// targetProblem records a job whose cluster cannot be used: a cluster it may
+// not use fails it; one that cannot be reached leaves it waiting, with a retry.
+func (r *AIJobReconciler) targetProblem(job *v1alpha1.AIJob, err error) reconcile.Result {
+	st, gen := &job.Status, job.Generation
+	st.Cluster = targetCluster(job)
+	var perm permanentError
+	if errors.As(err, &perm) {
+		if !st.Phase.IsTerminal() {
+			r.fail(job, "TargetNotAllowed", err.Error())
+		}
+		return reconcile.Result{}
+	}
+	if st.Phase == "" {
+		st.Phase = v1alpha1.AIJobPhasePending
+	}
+	setCondition(st, gen, v1alpha1.AIJobConditionTargetReachable, metav1.ConditionFalse, "Unreachable", err.Error())
+	return reconcile.Result{RequeueAfter: waitingRequeue}
+}
+
+func (r *AIJobReconciler) cancel(ctx context.Context, job *v1alpha1.AIJob, tgt *Target, helm helmClient.HelmClient, installed bool) (reconcile.Result, error) {
 	st, gen := &job.Status, job.Generation
 	if installed {
 		// Facts first: once the release is gone so are the pods.
-		if obs, err := r.observe(ctx, job); err == nil {
+		if obs, err := r.observe(ctx, job, tgt.Reader); err == nil {
 			applyObservation(st, obs)
 		}
 		if err := helm.DeleteRelease(ctx, job.Name); err != nil {
@@ -391,7 +427,7 @@ func (r *AIJobReconciler) cancel(ctx context.Context, job *v1alpha1.AIJob, helm 
 
 // afterCompletion keeps the record final and removes the execution once its
 // retention has passed.
-func (r *AIJobReconciler) afterCompletion(ctx context.Context, job *v1alpha1.AIJob, helm helmClient.HelmClient, installed bool) (reconcile.Result, error) {
+func (r *AIJobReconciler) afterCompletion(ctx context.Context, job *v1alpha1.AIJob, tgt *Target, helm helmClient.HelmClient, installed bool) (reconcile.Result, error) {
 	st, gen := &job.Status, job.Generation
 	if st.Cleanup.CompletedAt != nil {
 		return reconcile.Result{}, nil
@@ -407,7 +443,7 @@ func (r *AIJobReconciler) afterCompletion(ctx context.Context, job *v1alpha1.AIJ
 	if installed {
 		// Keep copying facts until the objects go: a pod's final state can land
 		// after the Job reports completion.
-		if obs, err := r.observe(ctx, job); err == nil {
+		if obs, err := r.observe(ctx, job, tgt.Reader); err == nil {
 			applyObservation(st, obs)
 		}
 	}
@@ -433,10 +469,24 @@ func (r *AIJobReconciler) afterCompletion(ctx context.Context, job *v1alpha1.AIJ
 }
 
 // finalize removes a still-installed release so a running job cannot outlive
-// its record, then lets the AIJob go.
-func (r *AIJobReconciler) finalize(ctx context.Context, job *v1alpha1.AIJob, helm helmClient.HelmClient) error {
+// its record, then lets the AIJob go. A job on a cluster it may not use was
+// never installed; one whose cluster cannot be reached is retried, unless it
+// never got as far as an install.
+func (r *AIJobReconciler) finalize(ctx context.Context, job *v1alpha1.AIJob, tgt *Target, terr error) error {
 	if !controllerutil.ContainsFinalizer(job, finalizer) {
 		return nil
+	}
+	var perm permanentError
+	switch {
+	case terr != nil && (errors.As(terr, &perm) || !findCondition(&job.Status, v1alpha1.AIJobConditionInstalled)):
+		controllerutil.RemoveFinalizer(job, finalizer)
+		return r.Update(ctx, job)
+	case terr != nil:
+		return fmt.Errorf("uninstall on delete: %w", terr)
+	}
+	helm, err := tgt.Helm(job.Namespace)
+	if err != nil {
+		return err
 	}
 	if rel, err := helm.LastRelease(ctx, job.Name); err != nil {
 		return err
@@ -655,13 +705,13 @@ func transient(err error) bool {
 
 // observe reads the execution: the Job or PyTorchJob, its Kueue Workload, its
 // pods with their claims and nodes. Uncached; see activeRequeue.
-func (r *AIJobReconciler) observe(ctx context.Context, job *v1alpha1.AIJob) (observed, error) {
+func (r *AIJobReconciler) observe(ctx context.Context, job *v1alpha1.AIJob, reader ctrl.Reader) (observed, error) {
 	o := observed{claims: map[string]*resourcev1.ResourceClaim{}, nodes: map[string]*corev1.Node{}}
 	ns := job.Namespace
 	name := executionName(job.Name)
 
 	k8sJob := &batchv1.Job{}
-	switch err := r.APIReader.Get(ctx, ctrl.ObjectKey{Namespace: ns, Name: name}, k8sJob); {
+	switch err := reader.Get(ctx, ctrl.ObjectKey{Namespace: ns, Name: name}, k8sJob); {
 	case err == nil:
 		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(k8sJob)
 		if err != nil {
@@ -675,7 +725,7 @@ func (r *AIJobReconciler) observe(ctx context.Context, job *v1alpha1.AIJob) (obs
 	if o.execution == nil {
 		ptj := &unstructured.Unstructured{}
 		ptj.SetGroupVersionKind(pytorchJobGVK)
-		if err := r.APIReader.Get(ctx, ctrl.ObjectKey{Namespace: ns, Name: name}, ptj); err == nil {
+		if err := reader.Get(ctx, ctrl.ObjectKey{Namespace: ns, Name: name}, ptj); err == nil {
 			o.execution = ptj
 		} else if !apierrors.IsNotFound(err) && !isNoMatch(err) {
 			return o, err
@@ -685,7 +735,7 @@ func (r *AIJobReconciler) observe(ctx context.Context, job *v1alpha1.AIJob) (obs
 	if o.execution != nil {
 		wls := &unstructured.UnstructuredList{}
 		wls.SetGroupVersionKind(workloadGVK)
-		if err := r.APIReader.List(ctx, wls, ctrl.InNamespace(ns)); err == nil {
+		if err := reader.List(ctx, wls, ctrl.InNamespace(ns)); err == nil {
 			for i := range wls.Items {
 				for _, ref := range wls.Items[i].GetOwnerReferences() {
 					if ref.UID == o.execution.GetUID() {
@@ -699,11 +749,11 @@ func (r *AIJobReconciler) observe(ctx context.Context, job *v1alpha1.AIJob) (obs
 	}
 
 	pods := &corev1.PodList{}
-	if err := r.APIReader.List(ctx, pods, ctrl.InNamespace(ns), ctrl.MatchingLabels{v1alpha1.AIJobJobIDLabel: job.Name}); err != nil {
+	if err := reader.List(ctx, pods, ctrl.InNamespace(ns), ctrl.MatchingLabels{v1alpha1.AIJobJobIDLabel: job.Name}); err != nil {
 		return o, err
 	}
 	if len(pods.Items) == 0 {
-		if err := r.APIReader.List(ctx, pods, ctrl.InNamespace(ns), ctrl.MatchingLabels{instanceLabel: job.Name}); err != nil {
+		if err := reader.List(ctx, pods, ctrl.InNamespace(ns), ctrl.MatchingLabels{instanceLabel: job.Name}); err != nil {
 			return o, err
 		}
 	}
@@ -715,13 +765,13 @@ func (r *AIJobReconciler) observe(ctx context.Context, job *v1alpha1.AIJob) (obs
 				continue
 			}
 			claim := &resourcev1.ResourceClaim{}
-			if err := r.APIReader.Get(ctx, ctrl.ObjectKey{Namespace: ns, Name: c}, claim); err == nil {
+			if err := reader.Get(ctx, ctrl.ObjectKey{Namespace: ns, Name: c}, claim); err == nil {
 				o.claims[c] = claim
 			}
 		}
 		if n := p.Spec.NodeName; n != "" && o.nodes[n] == nil {
 			node := &corev1.Node{}
-			if err := r.APIReader.Get(ctx, ctrl.ObjectKey{Name: n}, node); err == nil {
+			if err := reader.Get(ctx, ctrl.ObjectKey{Name: n}, node); err == nil {
 				o.nodes[n] = node
 			}
 		}

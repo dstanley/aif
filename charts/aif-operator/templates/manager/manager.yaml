@@ -47,6 +47,14 @@ spec:
           {{- with .Values.manager.aijobDeniedValues }}
             - --aijob-denied-values={{ join "," . }}
           {{- end }}
+          {{- with .Values.manager.aijobRemoteClusters }}
+          {{- with .allowedClusters }}
+            - --aijob-allowed-clusters={{ join "," . }}
+          {{- end }}
+          {{- with .secretName }}
+            - --aijob-remote-clusters-secret={{ . }}
+          {{- end }}
+          {{- end }}
             - --api-bind-address=:{{ .Values.api.port }}
           ports:
             - name: http

@@ -120,6 +120,15 @@ spec:
                 - repoName
                 - version
                 type: object
+              targetCluster:
+                description: |-
+                  TargetCluster is the Rancher cluster ID the job runs on ("c-xxxxx");
+                  empty or "local" is the cluster the AIJob is in. The operator installs the
+                  release there through Rancher's cluster proxy, into a namespace of the
+                  same name, which must exist; the AIJob stays here. Fixed at creation.
+                maxLength: 63
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
               values:
                 description: |-
                   Values are the chart values as submitted.
@@ -138,6 +147,9 @@ spec:
             - message: spec.cancel cannot be undone
               rule: '!has(oldSelf.cancel) || !oldSelf.cancel || (has(self.cancel)
                 && self.cancel)'
+            - message: spec.targetCluster is immutable; submit a new AIJob
+              rule: '(has(self.targetCluster) ? self.targetCluster : ''local'') ==
+                (has(oldSelf.targetCluster) ? oldSelf.targetCluster : ''local'')'
           status:
             description: |-
               AIJobStatus is written by the operator only. Timestamps are observed facts;
@@ -156,6 +168,10 @@ spec:
                     format: date-time
                     type: string
                 type: object
+              cluster:
+                description: Cluster is the Rancher cluster ID the job runs on ("local"
+                  for this one).
+                type: string
               completedAt:
                 format: date-time
                 type: string

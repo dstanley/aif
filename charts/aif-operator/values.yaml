@@ -150,6 +150,16 @@ manager:
   aijobDeniedValues:
     - network.rdma.enabled
     - network.hostNetwork
+  # aijobRemoteClusters lets an AIJob run on another Rancher-managed cluster
+  # (spec.targetCluster): the operator installs its release there through
+  # Rancher's cluster proxy, with a Rancher API token, and keeps the AIJob here.
+  # allowedClusters are the Rancher cluster IDs (c-xxxxx) jobs may target; the
+  # Secret (in this release's namespace) holds url, token and optionally ca.crt.
+  # Use a token of a user with rights only on those clusters. Empty: this
+  # cluster only.
+  aijobRemoteClusters:
+    allowedClusters: []
+    secretName: ""
 
   env: []
 

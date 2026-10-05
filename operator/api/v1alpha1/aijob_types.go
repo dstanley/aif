@@ -53,6 +53,9 @@ const (
 	AIJobConditionSuspended        = "Suspended"
 	AIJobConditionCompleted        = "Completed"
 	AIJobConditionExecutionCleaned = "ExecutionCleaned"
+	// AIJobConditionTargetReachable is False while a job's target cluster cannot
+	// be reached; the operator retries, and the job is not failed for it.
+	AIJobConditionTargetReachable = "TargetReachable"
 )
 
 // AIJobSource is the chart the execution is installed from: a chart in a
@@ -84,6 +87,7 @@ type AIJobRetention struct {
 // +kubebuilder:validation:XValidation:rule="self.source == oldSelf.source",message="spec.source is immutable; submit a new AIJob"
 // +kubebuilder:validation:XValidation:rule="has(self.values) == has(oldSelf.values) && (!has(self.values) || self.values == oldSelf.values)",message="spec.values is immutable; submit a new AIJob"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.cancel) || !oldSelf.cancel || (has(self.cancel) && self.cancel)",message="spec.cancel cannot be undone"
+// +kubebuilder:validation:XValidation:rule="(has(self.targetCluster) ? self.targetCluster : 'local') == (has(oldSelf.targetCluster) ? oldSelf.targetCluster : 'local')",message="spec.targetCluster is immutable; submit a new AIJob"
 type AIJobSpec struct {
 	// DisplayName is a human-readable name. Informational.
 	// +optional
@@ -109,6 +113,14 @@ type AIJobSpec struct {
 	// release and the job ends Cancelled. It cannot be set back to false.
 	// +optional
 	Cancel bool `json:"cancel,omitempty"`
+	// TargetCluster is the Rancher cluster ID the job runs on ("c-xxxxx");
+	// empty or "local" is the cluster the AIJob is in. The operator installs the
+	// release there through Rancher's cluster proxy, into a namespace of the
+	// same name, which must exist; the AIJob stays here. Fixed at creation.
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	TargetCluster string `json:"targetCluster,omitempty"`
 }
 
 // AIJobExecution names what the release created to run the job.
@@ -247,6 +259,9 @@ type AIJobStatus struct {
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 	// +optional
 	Execution AIJobExecution `json:"execution,omitempty"`
+	// Cluster is the Rancher cluster ID the job runs on ("local" for this one).
+	// +optional
+	Cluster string `json:"cluster,omitempty"`
 	// +optional
 	Queue *AIJobQueue `json:"queue,omitempty"`
 	// Pods lists every pod up to 16; above that only failed pods, with
