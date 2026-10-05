@@ -126,7 +126,7 @@ export interface Form {
   mode: 'smoke' | 'torchrun' | 'custom';
   nodes: number;
   gpusPerNode: number;
-  gpuMode: 'auto' | 'device-plugin' | 'dra';
+  gpuMode: 'auto' | 'device-plugin' | 'dra' | 'none'; // none: a CPU-only run
   // GPU model the run must get ('' = any), as the cluster names it. gpu.productName in the chart:
   // a DRA device selector, or GPU Feature Discovery's product label under the device plugin.
   gpuProduct: string;
@@ -342,7 +342,7 @@ export function missingPackages(image: string, code: string): string[] {
   return COMPANIONS.filter((m) => new RegExp(`^\\s*(import|from)\\s+${ m }\\b`, 'm').test(code));
 }
 
-export function resolveGpuMode(form: Form, facts: Facts): 'device-plugin' | 'dra' {
+export function resolveGpuMode(form: Form, facts: Facts): 'device-plugin' | 'dra' | 'none' {
   if (form.gpuMode !== 'auto') {
     return form.gpuMode;
   }
@@ -475,7 +475,7 @@ export function runPreflight(form: Form, facts: Facts): Check[] {
   // share of the node's GPU memory, rounded up to KAI's two decimals.
   const kaiShare = form.gpuShareMiB > 0 && isQueueScheduler(form.scheduler);
   const shareFraction = kaiShare && facts.gpuNodeMemoryMiB ? Math.ceil((form.gpuShareMiB / facts.gpuNodeMemoryMiB) * 100) / 100 : 1;
-  const requested = kaiShare ? form.nodes * shareFraction : form.nodes * form.gpusPerNode;
+  const requested = mode === 'none' ? 0 : kaiShare ? form.nodes * shareFraction : form.nodes * form.gpusPerNode;
 
   if (form.scheduler === 'kueue' && facts.kueueInstalled) {
     const lq = facts.localQueues.find((q) => q.name === form.queue && q.namespace === form.namespace);
@@ -491,7 +491,7 @@ export function runPreflight(form: Form, facts: Facts): Check[] {
       const cq = facts.clusterQueues.find((c) => c.name === lq.clusterQueue);
       // Kueue keeps nvidia.com/gpu and the DRA-mapped "gpu" as independent pools; on a dual-mode
       // ClusterQueue both cover the same physical GPUs, so only the pool for this request shape counts.
-      const quota = cq?.gpuQuotaByMode?.[mode];
+      const quota = mode === 'none' ? undefined : cq?.gpuQuotaByMode?.[mode]; // a CPU-only run uses no GPU quota
       const pool = mode === 'dra' ? 'DRA claims' : 'nvidia.com/gpu';
 
       const covered = cq?.covered || [];
@@ -573,7 +573,13 @@ export function runPreflight(form: Form, facts: Facts): Check[] {
 
   // 7. GPU exposure
 
-  if (mode === 'device-plugin') {
+  if (mode === 'none') {
+    if (form.gpuShareMiB > 0 || form.gpuProduct || form.computeDomain) {
+      add('gpu', 'fail', 'No GPU, but GPU settings are set', 'GPU request mode "None (CPU only)" runs without a GPU: clear the GPU share, GPU type and ComputeDomain, or pick a GPU request mode.');
+    } else {
+      add('gpu', 'pass', 'No GPU: runs on CPUs only', 'The run requests no GPU, so it can run on any node, including clusters without GPUs.');
+    }
+  } else if (mode === 'device-plugin') {
     if (facts.devicePluginGpus > 0) {
       add('gpu', 'pass', `GPU request via device plugin (nvidia.com/gpu)`, `${ facts.devicePluginGpus } allocatable across the cluster${ form.gpuMode === 'auto' ? ' — auto-detected' : '' }`);
     } else if (facts.draClassExists) {
@@ -603,7 +609,7 @@ export function runPreflight(form: Form, facts: Facts): Check[] {
   }
 
   // 7b. GPU type: the model the run asked for, in whichever way this cluster can enforce it
-  if (form.gpuProduct) {
+  if (form.gpuProduct && mode !== 'none') {
     const label = gpuShort(form.gpuProduct);
     const matches = (facts.gpuTypes || []).filter((t) => sameGpu(t.product, form.gpuProduct));
     const others = (facts.gpuTypes || []).map((t) => gpuShort(t.product)).join(', ') || 'none found';
@@ -630,7 +636,9 @@ export function runPreflight(form: Form, facts: Facts): Check[] {
   }
 
   // 7c. a shared GPU: the claim, one GPU per pod, and the memory left on it
-  if (kaiShare) {
+  if (mode === 'none') {
+    // no GPU: nothing to share (a share with mode none fails above)
+  } else if (kaiShare) {
     kaiShareChecks(form.gpuShareMiB, form.gpusPerNode, facts, SCHEDULER_BINDING[form.scheduler as 'kai' | 'runai'].display).forEach((c) => add(c.id, c.severity, c.title, c.detail));
   } else if (form.gpuShareMiB > 0) {
     sharedGpuChecks(form.namespace, form.gpuSharedClaim, form.gpuShareMiB, form.nodes, form.gpusPerNode, facts, mode, form.scheduler).forEach((c) => add(c.id, c.severity, c.title, c.detail));
@@ -656,8 +664,8 @@ export function runPreflight(form: Form, facts: Facts): Check[] {
     }
   }
 
-  if (kaiShare) {
-    // KAI places the share; its own check above covers fit.
+  if (kaiShare || mode === 'none') {
+    // KAI places the share; its own check above covers fit. A CPU-only run asks for no GPU.
   } else if (total > 0 && requested > total) {
     add('capacity', 'warn', `Requesting ${ requested } GPUs, cluster has ${ total }`, 'The job will wait in Pending/queued until enough GPUs exist. Reduce nodes or GPUs per node to run now.');
   } else if (total > 0) {
@@ -672,6 +680,8 @@ export function runPreflight(form: Form, facts: Facts): Check[] {
     add('headroom', 'fail', 'CPU and memory requests must be valid quantities', 'Examples: 500m, 2, 1Gi, 512Mi');
   } else if (!facts.podsReadable) {
     add('headroom', 'info', 'Node headroom not checked', 'Your role cannot list pods cluster-wide, so free CPU/memory on the GPU nodes is unknown. If the pod stays Pending with "Insufficient cpu", lower the requests.');
+  } else if (mode === 'none') {
+    add('headroom', 'info', 'Node headroom not checked for a CPU-only run', `It can run on any node; this page only tracks free CPU and memory on GPU nodes. The pod asks ${ cpuReq } CPU / ${ fmtMem(memReq) }.`);
   } else if (facts.gpuNodes.length) {
     const fits = facts.gpuNodes.filter((n) => n.cpuFree >= cpuReq && n.memFree >= memReq);
     const best = [...facts.gpuNodes].sort((a, b) => b.cpuFree - a.cpuFree)[0];
@@ -1077,7 +1087,7 @@ export function formFromValues(values: any, base: Form): { form: Form; unmapped:
   // command/args round-trip through a shell-quoted string, which is what the form holds.
   set('command', doc.job?.command, (x) => (Array.isArray(x) ? joinArgs(x.map(String)) : String(x)));
   set('args', doc.job?.args, (x) => (Array.isArray(x) ? joinArgs(x.map(String)) : String(x)));
-  set('gpuMode', doc.gpu?.mode, oneOf(['auto', 'device-plugin', 'dra'] as const, base.gpuMode));
+  set('gpuMode', doc.gpu?.mode, oneOf(['auto', 'device-plugin', 'dra', 'none'] as const, base.gpuMode));
   set('gpuProduct', doc.gpu?.productName, str);
   set('gpuSharedClaim', doc.gpu?.sharedClaim, str);
   set('gpuShareMiB', doc.gpu?.sharedMemoryMiB, num);
