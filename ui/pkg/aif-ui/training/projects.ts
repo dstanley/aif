@@ -131,6 +131,34 @@ export function shortProjectId(full: string | null): string | null {
   return idx === -1 ? full : full.slice(idx + 1);
 }
 
+/**
+ * How a member reads: a user by display name, a group by its name with "(group)", the role by its
+ * display name. Bindings hold ids (m-86h52, keycloakoidc_group://developers, ai-job-submitter); where a
+ * name cannot be read (a standard user cannot list other users) the id is shown.
+ */
+export function memberLabel(m: { name: string; kind: 'user' | 'group'; role: string }, userNames: Record<string, string>, roleNames: Record<string, string>): string {
+  const role = roleNames[m.role] || m.role;
+  let who = m.name;
+
+  if (m.kind === 'group') {
+    who = `${ m.name.replace(/^[a-z_]+:\/\//, '') } (group)`;
+  } else {
+    who = userNames[m.name] || userNames[m.name.replace(/^local:\/\//, '')] || m.name;
+  }
+
+  return role ? `${ who } (${ role })` : who;
+}
+
+/** Rancher users by id, to the names people know them by (display name, else username). */
+export function userNamesFrom(users: any[]): Record<string, string> {
+  return Object.fromEntries((users || []).map((u: any) => [u?.metadata?.name || u?.id, u?.displayName || u?.username || u?.metadata?.name || u?.id]).filter(([k]) => k));
+}
+
+/** Role templates by id, to their display names. */
+export function roleNamesFrom(roles: any[]): Record<string, string> {
+  return Object.fromEntries((roles || []).map((r: any) => [r?.metadata?.name || r?.id, r?.displayName || r?.metadata?.name || r?.id]).filter(([k]) => k));
+}
+
 export function membersOf(prtbs: Prtb[], rancherProjectId: string | null): ProjectMember[] {
   if (!rancherProjectId) {
     return [];
