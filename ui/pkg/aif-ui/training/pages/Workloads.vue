@@ -16,7 +16,7 @@ import { inClusterSection, trainingLink } from '../section';
 import { AIWORKLOAD_TYPE, BLUEPRINT_TYPE } from '../inference';
 import { profilesFrom } from '../profiles';
 import {
-  ago, ALL_RUNS, filterRuns, inferenceToRuns, pageOf, Run, RunFilter, RunSortKey, RunState, sortRuns, trainingToRuns
+  ago, ALL_RUNS, filterRuns, inferenceToRuns, pageOf, Run, RunFilter, RunSortKey, RunState, sortRuns, trainingToRuns, linkedRun
 } from '../runs';
 import { CheckpointVolume, checkpointVolumes } from '../checkpoints';
 import { trainingRuns } from '../trainingruns';
@@ -26,7 +26,7 @@ const COLUMNS: { key: RunSortKey; label: string }[] = [
   { key: 'name', label: 'Name' },
   { key: 'type', label: 'Type' },
   { key: 'profile', label: 'Profile' },
-  { key: 'project', label: 'Project' },
+  { key: 'project', label: 'Namespace' },
   { key: 'resources', label: 'Resources' },
   { key: 'state', label: 'State' },
   { key: 'created', label: 'Created' },
@@ -36,7 +36,9 @@ export default defineComponent({
   name:       'TrainingJobWorkloads',
   // Set when the page is embedded as one tab of the AI Factory Workloads page: the tab is fixed
   // and the page's own title and tab strip are left out.
-  props:      { fixedTab: { type: String, default: null } },
+  // compact: the most recent runs only, as a panel of another page (a cluster's Overview): the table
+  // with its expandable rows, without the title, toolbar, pager or kept volumes
+  props:      { fixedTab: { type: String, default: null }, compact: { type: Number, default: 0 } },
   components: {
     Loading, Banner, RunDetail, VolumeFiles, YamlViewer
   },
@@ -59,6 +61,8 @@ export default defineComponent({
       pageSize: 10,
       menuFor:  '' as string, // row key whose ⋯ menu is open
       open:     {} as Record<string, boolean>, // expanded rows, by key
+      // a link that names a run (?q=<name>) opens its detail once, when the runs have loaded
+      linkOpened: false,
       yaml:     {
         open: false, title: '', docs: [] as YamlDoc[], loading: false, error: ''
       },
@@ -89,7 +93,10 @@ export default defineComponent({
   },
 
   computed: {
-    columns: () => COLUMNS,
+    // compact (a cluster's Overview, training runs only): no Type column, every row would say Training
+    columns(): { key: RunSortKey; label: string }[] {
+      return this.compact ? COLUMNS.filter((c) => c.key !== 'type') : COLUMNS;
+    },
     clusterSection(): boolean {
       return inClusterSection(this.$route);
     },
@@ -157,7 +164,7 @@ export default defineComponent({
     },
 
     paged(): { items: Run[]; page: number; pages: number; from: number; to: number } {
-      return pageOf(this.shown, this.page, this.pageSize);
+      return this.compact ? pageOf(this.shown, 1, this.compact) : pageOf(this.shown, this.page, this.pageSize);
     },
 
     routes(): Record<string, any> {
@@ -170,6 +177,14 @@ export default defineComponent({
   },
 
   watch: {
+    all(runs: Run[]) {
+      const r = this.linkOpened ? null : linkedRun(runs, String(this.$route.query.q || ''));
+
+      if (r) {
+        this.open = { ...this.open, [r.key]: true };
+        this.linkOpened = true;
+      }
+    },
     // a filter change can leave the current page empty
     filter: {
       deep: true,
@@ -365,12 +380,13 @@ export default defineComponent({
          and actions. Embedded as the Workloads page's Training tab, the toolbar moves into that
          page's header, above its tabs. -->
     <header
-      v-if="!fixedTab"
+      v-if="!fixedTab && !compact"
       class="fixed-header"
     >
       <h1>{{ clusterSection ? 'Jobs' : t('trainingjobs.endpoints.title') }}</h1>
     </header>
     <Teleport
+      v-if="!compact"
       defer
       to="#workloads-toolbar"
       :disabled="!fixedTab"
@@ -469,13 +485,14 @@ export default defineComponent({
           </ul>
         </div>
         <button
-          class="btn role-secondary"
+          v-clean-tooltip="'Refresh'"
+          class="btn role-tertiary tj-icon-button"
           type="button"
+          aria-label="Refresh"
           :disabled="refreshing"
           @click="load()"
         >
           <i :class="['icon', refreshing ? 'icon-spinner icon-spin' : 'icon-refresh']" />
-          Refresh
         </button>
       </div>
     </Teleport>
@@ -494,7 +511,7 @@ export default defineComponent({
     />
 
     <div
-      v-if="!fixedTab && !clusterSection"
+      v-if="!fixedTab && !clusterSection && !compact"
       class="tj-tabs"
     >
       <router-link
@@ -556,7 +573,9 @@ export default defineComponent({
                 @click.prevent="toggleOpen(r)"
               ><i :class="['icon', open[r.key] ? 'icon-chevron-down' : 'icon-chevron-right', 'tj-chev']" />{{ r.name }}</a>
             </td>
-            <td>{{ r.type === 'training' ? 'Training' : 'Endpoint' }}</td>
+            <td v-if="!compact">
+              {{ r.type === 'training' ? 'Training' : 'Endpoint' }}
+            </td>
             <td>{{ r.profileLabel }}</td>
             <td>{{ r.namespace }}</td>
             <td>{{ r.resources }}</td>
@@ -623,7 +642,7 @@ export default defineComponent({
     </table>
 
     <div
-      v-if="shown.length"
+      v-if="shown.length && !compact"
       class="tj-pager"
     >
       <span class="text-muted">{{ paged.from }}–{{ paged.to }} of {{ shown.length }} runs</span>
@@ -671,7 +690,7 @@ export default defineComponent({
     </div>
 
     <section
-      v-if="orphanCheckpoints.length"
+      v-if="orphanCheckpoints.length && !compact"
       class="tj-orphans"
     >
       <h3>Kept checkpoint volumes without a run</h3>
@@ -773,6 +792,9 @@ export default defineComponent({
   display: flex;
   align-items: center;
   gap: 12px;
+  // an icon beside its label, with room between them
+  .btn { gap: 6px; }
+  .tj-icon-button { padding: 0 10px; min-width: 0; }
   flex-wrap: wrap;
   margin-bottom: 20px;
   .search-box .input-sm {

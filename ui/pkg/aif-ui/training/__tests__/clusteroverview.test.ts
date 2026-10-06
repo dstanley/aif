@@ -23,7 +23,7 @@ describe('the cluster overview', () => {
 
   it('counts runs by the state that matters to someone watching the GPUs', () => {
     expect(jobCounts(jobs)).toEqual({
-      running: 1, queued: 1, succeeded: 1, failed: 1
+      running: 1, queued: 1, completed: 1, failed: 1
     });
   });
 
@@ -36,5 +36,16 @@ describe('the cluster overview', () => {
     });
     expect(rows[2].result).toBe('exit 1 · BackoffLimitExceeded');
     expect(rows[0]).toMatchObject({ title: 'train-4', gpus: '–', result: '' });
+  });
+});
+
+describe('a run\'s state on the Overview', async() => {
+  const { stateLabel } = await import('../clusteroverview');
+
+  it('uses the Jobs page\'s words', () => {
+    expect(stateLabel('Succeeded')).toBe('Completed');
+    expect(stateLabel('Admitted')).toBe('Pending');
+    expect(stateLabel('Running')).toBe('Running');
+    expect(stateLabel('Failed')).toBe('Failed');
   });
 });

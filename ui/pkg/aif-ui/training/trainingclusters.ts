@@ -104,17 +104,25 @@ export async function clusterGpus(store: any, clusterId: string): Promise<Cluste
 /**
  * Marks a downstream cluster for AI: AI Factory's Fleet HelmOp targets clusters carrying this label
  * and installs the training agent there (the AIJob controller, the training chart repository, the
- * default profiles). Set on the cluster's provisioning object, whose labels Rancher copies to its
- * Fleet cluster.
+ * default profiles). Fleet takes a cluster's labels from its management cluster object, so the label
+ * is set there; a cluster Rancher provisions also gets it on its provisioning object, so the two
+ * agree.
  */
 export const AI_CLUSTER_LABEL = 'ai-factory.suse.com/enabled';
 
-/** Set or clear a cluster's AI label: a merge patch of its provisioning object on the management cluster. */
-export async function setAiEnabled(store: any, prov: { namespace: string; name: string }, enabled: boolean): Promise<void> {
-  await store.dispatch('rancher/request', {
-    url:     `/k8s/clusters/local/apis/provisioning.cattle.io/v1/namespaces/${ encodeURIComponent(prov.namespace) }/clusters/${ encodeURIComponent(prov.name) }`,
+/** Set or clear a cluster's AI label: merge patches of its management cluster object (which Fleet
+ * reads) and, where it has one, its provisioning object. */
+export async function setAiEnabled(store: any, clusterId: string, prov: { namespace: string; name: string } | null, enabled: boolean): Promise<void> {
+  const patch = {
     method:  'PATCH',
     headers: { 'content-type': 'application/merge-patch+json' },
     data:    { metadata: { labels: { [AI_CLUSTER_LABEL]: enabled ? 'true' : null } } },
-  });
+  };
+
+  await store.dispatch('rancher/request', { url: `/k8s/clusters/local/apis/management.cattle.io/v3/clusters/${ encodeURIComponent(clusterId) }`, ...patch });
+  if (prov) {
+    await store.dispatch('rancher/request', {
+      url: `/k8s/clusters/local/apis/provisioning.cattle.io/v1/namespaces/${ encodeURIComponent(prov.namespace) }/clusters/${ encodeURIComponent(prov.name) }`, ...patch
+    });
+  }
 }

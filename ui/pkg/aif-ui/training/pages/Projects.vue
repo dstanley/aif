@@ -20,7 +20,7 @@ import {
 import {
   AiProject, RunaiProject, RunaiReadiness, applyQuotaToQueue, assembleProjects,
   buildNamespaceManifest, buildProjectBindingPatch, buildQueueManifest, buildRancherProjectManifest,
-  committedGpuAfter, defaultNamespaceFor, projectIdFromSaveResult, projectSourceLabel,
+  committedGpuAfter, defaultNamespaceFor, memberLabel, projectIdFromSaveResult, projectSourceLabel, roleNamesFrom, userNamesFrom,
   projectWarning, resolveCreatedProject, runaiProjectsFrom, runaiReadinessOf,
   shortProjectId, validateCap, isAiProject, AI_PROJECT_LABEL,
   validateProjectName, validateQuota,
@@ -52,6 +52,9 @@ export default defineComponent({
       clusterName: '',
       // project rows opened to show namespaces, members and the scheduler's queue
       openDetails: {} as Record<string, boolean>,
+      // user and role names for the members: bindings hold ids
+      userNames: {} as Record<string, string>,
+      roleNames: {} as Record<string, string>,
       // queues without a project, and the scheduler default: plumbing, closed by default
       showAdvanced: false,
       projects:            [] as AiProject[],
@@ -189,17 +192,6 @@ export default defineComponent({
     quotaNoun(): string {
       return this.hasGuarantees ? 'Guaranteed' : 'Limit';
     },
-    /**
-     * Column tooltip rather than a standing banner: it is context for the badges beside it, and a
-     * paragraph across the top of the page pushes the tables down on every visit to say it once.
-     */
-    runaiSummary(): string {
-      const ready = this.runaiProjects.filter((p) => p.namespace && p.ready).length;
-      const usable = this.projects.filter((p) => this.runaiFor(p).state === 'ready').length;
-
-      return `${ usable } of ${ this.projects.length } project(s) can run a Run:AI job; ${ ready } of ${ this.runaiProjects.length } Run:AI project(s) have a namespace.` +
-        '<br><br>Run:AI creates projects in its control plane. This page adopts them and adds the Rancher membership they lack.';
-    },
     runaiManagedHelp(): string {
       return 'Leave this checked on a Run:AI cluster.<br><br>Run:AI creates projects in its control plane ' +
         'and syncs them down; its admission webhook rejects a <code>projects.run.ai</code> written from ' +
@@ -324,27 +316,6 @@ export default defineComponent({
       return trainingLink(this.$route, SUBMIT_PAGE);
     },
 
-    /**
-     * What the committed-GPU number means, which depends on the scheduler.
-     *
-     * Without a queueing scheduler a project's quota is a ceiling, not a reservation, so the total
-     * can exceed the cluster and that is not an error. Saying so here, rather than in a banner,
-     * keeps the explanation attached to the number it explains — and reads as an upgrade path
-     * rather than a missing prerequisite, since quota admission is part of Kubernetes already.
-     */
-    quotaMeaning(): string {
-      if (this.hasGuarantees) {
-        return 'GPUs reserved for projects by their queues. A project is guaranteed its share, ' +
-          'can borrow what other projects are not using, and gives it back through preemption.';
-      }
-
-      return 'Every project\'s cap added together. A cap is a ceiling, not a reservation, so this ' +
-        'can exceed the GPUs in the cluster — projects compete first-come, first-served up to it. ' +
-        'Kubernetes ResourceQuota enforces each cap on the default scheduler, with nothing extra ' +
-        'to install. To make shares guaranteed, and to add borrowing, gang scheduling and ' +
-        'preemption, install the KAI Scheduler (NVIDIA, Apache-2.0) or Kueue.';
-    },
-
     /** Cluster Explorer's Projects/Namespaces page — where membership and namespaces are managed. */
     projectsNamespacesRoute() {
       return { name: 'c-cluster-product-projectsnamespaces', params: { cluster: this.clusterId, product: 'explorer' } };
@@ -381,6 +352,7 @@ export default defineComponent({
         this.error = `Could not enable registry credentials for ${ p.displayName }: ${ e?.message || e?.data?.message || e }`;
       }
     },
+    memberLabel,
     async safeFindAll(store: string, type: string, label: string): Promise<any[]> {
       if (!this.$store.getters[`${ store }/schemaFor`](type)) {
         return [];
@@ -495,6 +467,14 @@ export default defineComponent({
         // another cluster is still a name we must not reuse.
         this.rancherProjectNames = rancherProjects.map((p: any) => p.metadata?.name).filter(Boolean);
         this.credentialProjects = rancherProjects.filter((p: any) => p.metadata?.namespace === this.clusterId && isAiProject(p)).map((p: any) => p.metadata.name);
+        // names for the members; a standard user may not list users, and then sees ids
+        Promise.all([
+          this.safeFindAll('management', 'management.cattle.io.user', 'users'),
+          this.safeFindAll('management', 'management.cattle.io.roletemplate', 'role templates'),
+        ]).then(([users, roles]) => {
+          this.userNames = userNamesFrom(users);
+          this.roleNames = roleNamesFrom(roles);
+        }).catch(() => {});
         this.projects = assembleProjects(
           rancherProjects.filter((p: any) => p.metadata?.namespace === this.clusterId),
           namespaces,
@@ -1054,13 +1034,6 @@ export default defineComponent({
         </h1>
         <p class="text-muted ap-lede">
           {{ t('trainingjobs.projects.lede') }}
-          <i
-            v-clean-tooltip.bottom="t('trainingjobs.projects.subtitle')"
-            class="icon icon-info ap-info"
-            tabindex="0"
-            role="img"
-            aria-label="What a project is"
-          />
         </p>
         <p
           v-if="clusterName"
@@ -1068,21 +1041,6 @@ export default defineComponent({
         >
           Projects and quotas on <strong>{{ clusterName }}</strong>
         </p>
-      </div>
-      <div class="ap-header-actions">
-        <button
-          v-if="canCreate || canAdopt"
-          class="btn role-primary"
-          @click="showCreate = !showCreate"
-        >
-          <i class="icon icon-plus mr-5" /> {{ runaiInstalled ? 'Add project' : 'New project' }}
-        </button>
-        <button
-          class="btn role-secondary"
-          @click="load()"
-        >
-          <i class="icon icon-refresh mr-5" /> Refresh
-        </button>
       </div>
     </header>
 
@@ -1504,21 +1462,26 @@ export default defineComponent({
         Projects
         <span
           v-if="projectRows.length"
-          class="ap-count"
-        >{{ projectRows.length }}</span>
-        <span
-          v-if="projectRows.length"
           class="ap-quota-total text-muted"
         >
           {{ fmt(committedGpu) }}<span v-if="hasUnlimitedLeaf"> + ∞</span> GPU
           {{ hasGuarantees ? 'guaranteed' : 'in limits' }} in total
-          <i
-            v-clean-tooltip.bottom="quotaMeaning"
-            class="icon icon-info ap-info"
-            tabindex="0"
-            role="img"
-            aria-label="What this number means"
-          />
+        </span>
+        <!-- beside the list they act on -->
+        <span class="ap-header-actions">
+          <button
+            v-if="canCreate || canAdopt"
+            class="btn role-primary"
+            @click="showCreate = !showCreate"
+          >
+            <i class="icon icon-plus mr-5" /> {{ runaiInstalled ? 'Add project' : 'New project' }}
+          </button>
+          <button
+            class="btn role-secondary"
+            @click="load()"
+          >
+            <i class="icon icon-refresh mr-5" /> Refresh
+          </button>
         </span>
       </h2>
       <table
@@ -1530,13 +1493,6 @@ export default defineComponent({
             <th>Project</th>
             <th v-if="runaiInstalled">
               Run:AI
-              <i
-                v-clean-tooltip.bottom="runaiSummary"
-                class="icon icon-info ap-info"
-                tabindex="0"
-                role="img"
-                aria-label="What this column means"
-              />
             </th>
             <th>GPU entitlement</th>
             <th>Current usage</th>
@@ -1676,7 +1632,7 @@ export default defineComponent({
                   </div>
                   <div>
                     <dt>Members</dt>
-                    <dd>{{ p.members.length ? p.members.map(m => `${ m.name } (${ m.role })`).join(', ') : '—' }}</dd>
+                    <dd>{{ p.members.length ? p.members.map(m => memberLabel(m, userNames, roleNames)).join(', ') : '—' }}</dd>
                   </div>
                   <div v-if="p.queue">
                     <dt>Advanced scheduling</dt>
@@ -1822,11 +1778,11 @@ export default defineComponent({
 .ap-unassigned-actions { display: flex; gap: 8px; align-items: center; }
 .ap-assign-select { min-width: 280px; }
 
-.ai-projects { padding: 0 20px 20px; }
+.ai-projects { padding: 20px; }
 .ap-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; h1 { margin-bottom: 0; } }
 .ap-title { display: flex; align-items: center; gap: 8px; }
 .ap-version { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; cursor: help; }
-.ap-header-actions { display: flex; gap: 8px; align-items: center; }
+.ap-header-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; font-size: 14px; font-weight: normal; }
 .ap-capacity { display: flex; gap: 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--border-radius); margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
 // Next to the last stat rather than flush with the page edge: the strip is full width, so
 // margin-left:auto stranded the label a long way from the numbers it names.
@@ -1854,23 +1810,13 @@ export default defineComponent({
 }
 .ap-create-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .ap-list-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 16px;
   margin: 0 0 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
-}
-.ap-count {
-  display: inline-block;
-  margin-left: 8px;
-  padding: 0 7px;
-  border-radius: 10px;
-  background: var(--primary);
-  color: var(--primary-text, #fff);
-  font-size: 12px;
-  line-height: 18px;
-  min-width: 18px;
-  text-align: center;
-  font-weight: normal;
 }
 .ap-field-hint, .ap-field-error { font-size: 11px; margin: 4px 0 0; }
 .ap-checkbox { display: flex; align-items: center; gap: 6px; label { display: flex; gap: 8px; align-items: center; cursor: pointer; } }

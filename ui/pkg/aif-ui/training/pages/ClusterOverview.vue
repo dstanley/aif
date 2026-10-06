@@ -7,14 +7,13 @@ import Banner from '@components/Banner/Banner.vue';
 import Loading from '@shell/components/Loading';
 import GpuCapacityPanel from '../components/GpuCapacityPanel.vue';
 import ProjectsPanel from '../components/ProjectsPanel.vue';
-import { BadgeState } from '@components/BadgeState';
 import { loadOverview } from '../overview';
 import type { Overview } from '../overview';
 import { AIJOB_TYPE } from '../aijob';
 import { loadClusterLabel } from '../cluster';
 import { trainingLink } from '../section';
-import { jobRows, jobCounts } from '../clusteroverview';
-import type { JobRow } from '../clusteroverview';
+import { jobCounts } from '../clusteroverview';
+import Workloads from './Workloads.vue';
 
 const vm = getCurrentInstance()!.proxy as any;
 const store = vm.$store;
@@ -27,7 +26,6 @@ const overview = ref<Overview | null>(null);
 const jobs = ref<any[]>([]);
 const hasAIJobs = ref(true);
 
-const rows = computed<JobRow[]>(() => jobRows(jobs.value));
 const counts = computed(() => jobCounts(jobs.value));
 const catalogRoute = computed(() => trainingLink(vm.$route, 'catalog'));
 const jobsRoute = computed(() => trainingLink(vm.$route, 'jobs'));
@@ -67,9 +65,9 @@ onUnmounted(() => timer && clearInterval(timer));
   <main class="cluster-overview">
     <header class="co-header">
       <div>
-        <h1>AI Training</h1>
-        <p class="text-muted">
-          {{ clusterName }}: GPU capacity, projects and the training runs on this cluster
+        <h1>Overview</h1>
+        <p class="co-lede">
+          Monitor training activity, GPU capacity, and project allocations on this cluster.
         </p>
       </div>
       <div class="co-actions">
@@ -109,7 +107,7 @@ onUnmounted(() => timer && clearInterval(timer));
           <span class="co-num">{{ counts.queued }}</span><span class="text-muted">Queued or pending</span>
         </div>
         <div class="co-count">
-          <span class="co-num">{{ counts.succeeded }}</span><span class="text-muted">Succeeded</span>
+          <span class="co-num">{{ counts.completed }}</span><span class="text-muted">Completed</span>
         </div>
         <div class="co-count">
           <span :class="['co-num', { 'text-error': counts.failed }]">{{ counts.failed }}</span><span class="text-muted">Failed or cancelled</span>
@@ -124,52 +122,8 @@ onUnmounted(() => timer && clearInterval(timer));
               View all →
             </router-link>
           </div>
-          <p
-            v-if="!rows.length"
-            class="text-muted"
-          >
-            No training runs on this cluster yet.
-            <router-link :to="catalogRoute">
-              Deploy one from the Catalog.
-            </router-link>
-          </p>
-          <table
-            v-else
-            class="co-table"
-          >
-            <thead>
-              <tr>
-                <th>Run</th><th>Namespace</th><th>Phase</th><th>GPUs</th><th>Node</th><th>Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="r in rows"
-                :key="r.key"
-              >
-                <td>
-                  <router-link :to="trainingLink($route, 'jobs', { q: r.name })">
-                    {{ r.title }}
-                  </router-link>
-                  <div class="text-muted co-sub">
-                    {{ r.name }}<template v-if="r.profile">
-                      · {{ r.profile }}
-                    </template>
-                  </div>
-                </td>
-                <td>{{ r.namespace }}</td>
-                <td>
-                  <BadgeState
-                    :color="r.color"
-                    :label="r.phase"
-                  />
-                </td>
-                <td>{{ r.gpus }}</td>
-                <td>{{ r.nodes }}</td>
-                <td>{{ r.result }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <!-- the Jobs page's table: the same columns, and a row expands to the run's detail -->
+          <Workloads :compact="10" />
         </section>
 
         <div class="co-side">
@@ -192,6 +146,8 @@ onUnmounted(() => timer && clearInterval(timer));
 </template>
 
 <style lang="scss" scoped>
+.co-lede { margin: 4px 0 0; font-size: 15px; opacity: 0.8; }
+
 .cluster-overview { padding: 20px; }
 .co-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
 .co-header p { margin: 4px 0 0; }

@@ -243,3 +243,13 @@ export function ago(iso: string, now = Date.now()): string {
 
   return `${ Math.floor(s / 86400) }d ago`;
 }
+
+/**
+ * The run a link names (?q=<name>, as the all-jobs list links to it), so the page can open its
+ * detail: the one run with exactly that name, or none when there is no such run or more than one.
+ */
+export function linkedRun<T extends { name: string }>(runs: T[], q: string): T | null {
+  const hits = q ? runs.filter((r) => r.name === q) : [];
+
+  return hits.length === 1 ? hits[0] : null;
+}

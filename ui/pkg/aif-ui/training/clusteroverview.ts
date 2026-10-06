@@ -14,6 +14,7 @@ export interface JobRow {
   result: string;
   active: boolean; // pending, queued, admitted or running
   submitted: number; // ms since the epoch, for ordering runs from several clusters together
+  created: string; // when the run was created, as the Jobs page's Created column shows it
 }
 
 const ACTIVE = new Set(['Pending', 'Queued', 'Admitted', 'Running']);
@@ -22,6 +23,10 @@ const COLOR: Record<string, string> = {
 };
 
 const phaseOf = (j: any): string => j?.status?.phase || 'Pending';
+// What a phase is called, in the words the Jobs page uses for the same run
+const STATE_LABEL: Record<string, string> = { Succeeded: 'Completed', Admitted: 'Pending' };
+
+export const stateLabel = (phase: string): string => STATE_LABEL[phase] || phase;
 const submittedOf = (j: any): number => Date.parse(j?.status?.submittedAt || j?.metadata?.creationTimestamp || '') || 0;
 
 /** Active runs first, then the most recent. */
@@ -29,10 +34,10 @@ export function byActivity(a: { active: boolean; submitted: number }, b: { activ
   return Number(b.active) - Number(a.active) || b.submitted - a.submitted;
 }
 
-/** How many runs are in each kind of state: running, waiting (queued, admitted or pending), succeeded, failed or cancelled. */
-export function jobCounts(jobs: any[]): { running: number; queued: number; succeeded: number; failed: number } {
+/** How many runs are in each kind of state: running, waiting (queued, admitted or pending), completed, failed or cancelled. */
+export function jobCounts(jobs: any[]): { running: number; queued: number; completed: number; failed: number } {
   const c = {
-    running: 0, queued: 0, succeeded: 0, failed: 0
+    running: 0, queued: 0, completed: 0, failed: 0
   };
 
   for (const j of jobs) {
@@ -43,7 +48,7 @@ export function jobCounts(jobs: any[]): { running: number; queued: number; succe
     } else if (ACTIVE.has(p)) {
       c.queued++;
     } else if (p === 'Succeeded') {
-      c.succeeded++;
+      c.completed++;
     } else {
       c.failed++;
     }
@@ -85,13 +90,14 @@ export function jobRows(jobs: any[], limit = 10): JobRow[] {
       namespace: j.metadata.namespace,
       title:     j.spec?.displayName || j.metadata.name,
       profile:   j.spec?.profile || '',
-      phase:     phaseOf(j),
+      phase:     stateLabel(phaseOf(j)),
       color:     COLOR[phaseOf(j)] || 'bg-info',
       gpus:      gpus ? `${ gpus }${ product ? ` × ${ product }` : '' }` : '–',
       nodes:     nodes.length ? nodes.map((n) => n.split('.')[0]).join(', ') : '–',
       result:    resultOf(j),
       active:    ACTIVE.has(phaseOf(j)),
       submitted: submittedOf(j),
+      created:   j.metadata?.creationTimestamp || '',
     };
   });
 }

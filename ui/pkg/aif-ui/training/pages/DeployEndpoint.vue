@@ -183,7 +183,7 @@ export default defineComponent({
         await model.save();
         done(true);
         this.$router.push({
-          name: `c-cluster-${ PRODUCT_NAME }-${ ENDPOINTS_PAGE }`, params: { cluster: this.$route.params.cluster }, query: { tab: 'inference' }
+          name: `c-cluster-${ PRODUCT_NAME }-${ ENDPOINTS_PAGE }`, params: { cluster: this.$route.params.cluster }
         });
       } catch (e: any) {
         this.deployError = e?.message || e?._statusText || String(e);
