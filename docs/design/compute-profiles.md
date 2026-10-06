@@ -3,7 +3,7 @@
 This document proposes how AI Factory defines and enforces what users may deploy across clusters:
 portable profile packs, bound to each cluster as `ComputeProfile` resources, granted to projects,
 and enforced at Kubernetes admission by an AI Factory policy running on Kubewarden. It builds on
-profile packs, AI-enabled clusters and the per-cluster AI Training section, remote AIJobs, and the
+profile packs, AI-enabled clusters and the per-cluster AI Jobs section, and the
 profile validation in the UI and the Python SDK.
 
 ## 1. Goal
@@ -271,7 +271,15 @@ spec:
       max: 2
 
     maxRuntimeHours: 8
+
+  artifacts:
+    keep: { metadata: true, logs: true, final: true, best: true, intermediate: false }
+    warm: 7d
 ```
+
+`artifacts` is the profile's part of retention: which artifact classes its runs keep, and how long
+their run volumes and checkpoints stay warm for resumption. Whether and where artifacts are archived
+is the platform's and the project's decision, not the profile's (see `data-lifecycle.md`).
 
 The resource provides:
 
@@ -489,6 +497,7 @@ nodes              within min/max
 GPUs per worker    within min/max
 image              approved registry
 runtime            ≤ maxRuntimeHours
+artifacts.warm     ≤ the profile's (and the platform's maximum)
 ```
 
 The runtime limit must also be translated into the underlying Job's `activeDeadlineSeconds` so the limit is enforced during execution.
@@ -916,7 +925,7 @@ AI Factory
 
 Profile Packs can live alongside Blueprints or in a dedicated Profiles section.
 
-### AI Training → Catalog
+### AI Jobs → Catalog
 
 Each AI-enabled cluster shows the profiles actually available there:
 

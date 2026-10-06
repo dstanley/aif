@@ -231,7 +231,7 @@ operator applies the run's **artifact policy**:
    (paths, sizes, SHA-256), from which the operator presigns the uploads, multipart for large files;
    then the upload.
 2. The run volume is deleted once collection is verified, or after its warm period if the policy
-   keeps it for resumption. Kubernetes keeps a volume while pods that mounted it exist, so the run's
+   keeps it for resumption (the profile's `artifacts.warm`). Kubernetes keeps a volume while pods that mounted it exist, so the run's
    execution objects (its Job and pods, kept for `spec.retention.executionObjects`) are removed with
    it; a restore goes to a new volume.
 3. The AIJob records what was kept and where.
@@ -261,22 +261,45 @@ artifact store) reads from the collected location; it is a separate step and not
 
 ## Retention
 
+Retention is set by two policies with different owners:
+
+| Decision | Owner | Where it is set |
+|---|---|---|
+| Whether artifacts are archived, to which target, how long they stay active and archived, how long the run record is kept | The platform, overridable per project | operator configuration; the project |
+| Which artifact classes a run keeps, and how long its run volume and checkpoints stay warm for resumption | The workload | the run's compute profile (`spec.artifacts`, see `compute-profiles.md`) |
+| A shorter warm period, or fewer artifact classes, for one run | The user, where the profile opens it | the AIJob |
+
+Archiving follows governance (compliance, model-governance copies, which targets a team may use),
+so it does not vary with how a run was shaped. What a run keeps follows the workload: a multi-day
+training profile keeps its best checkpoint warm for days so a run can resume; a test or benchmark
+profile keeps its report and nothing else.
+
 ```yaml
-# operator configuration (global), later overridable per project or profile
+# operator configuration (global), overridable per project: where artifacts go and for how long
 retention:
   completedRuns:
-    runVolume: 0d                      # delete the run volume after collection (or e.g. 7d warm)
-    active: 30d                        # artifacts on the Active target
+    active: 30d                        # kept artifacts on the Active target
     archive: 335d                      # then on the Archive target
     record: 3y                         # the AIJob record itself
-  artifactClasses:
-    metadata: keep                     # record, metrics, evaluation summary
-    logs: archive
-    final: archive                     # final model or adapter
-    best: archive                      # best checkpoint
-    intermediate: { delete: 7d }       # other checkpoints
-    workspace: delete                  # scratch
+  limits:
+    warmMax: 14d                       # no profile may keep a run volume longer
 ```
+
+```yaml
+# the run's compute profile: what its runs keep, and how long they stay warm
+artifacts:
+  keep:
+    metadata: true                     # record, metrics, evaluation summary
+    logs: true
+    final: true                        # final model or adapter
+    best: true                         # best checkpoint
+    intermediate: false                # other checkpoints stay on the run volume and go with it
+  warm: 7d                             # the run volume, for resumption; 0d deletes it after collection
+  editable: [warm]                     # a run may shorten it, not extend it
+```
+
+The admission policy checks that a run's own setting stays within its profile's, and the profile's
+within the platform's `warmMax`. Collection applies `keep`; retention applies the rest.
 
 Two capacity facts drive the defaults: a full checkpoint with Adam in mixed precision is roughly
 14–16 bytes per parameter (about 100–110 GB for 7B, 480–550 GB for 34B), while an adapter is
@@ -325,7 +348,7 @@ agent. AI Factory's central view lists datasets and runs across clusters, as the
 Users see datasets, runs and artifacts; DataTransfers and Jobs appear only as detail for
 troubleshooting.
 
-- **Datasets** (per cluster, in AI Training): name, version, size, source, status; an import shows
+- **Datasets** (per cluster, in AI Jobs): name, version, size, source, status; an import shows
   progress (`437 GB of 1.2 TB, 36%`).
 - **A run's detail:** its artifacts (state, size, storage), with Download, Restore and Delete.
 - **SDK:**
