@@ -40,7 +40,7 @@ Jobs or storage tiers. A notebook is the control surface; large data moves close
 | AIJob | Durable record; `spec.retention.executionObjects` (default 168h) removes the Job and pods, keeps the record and `status.report` | No artifact manifest or artifact state; volumes outlive their retention unless removed by hand |
 | Kept volumes | The Jobs page lists kept checkpoint volumes, including those without a run | Grows without bound; no archive tier |
 
-### Evidence from the lab (2026-10-06)
+### Evidence from the lab
 
 The ingest → stage → read path was exercised on the lab cluster with SeaweedFS as the
 S3-compatible store and its CSI driver for the RWX volume (one volume server on a Longhorn volume,
@@ -53,6 +53,13 @@ lab VMs; functional evidence, not production throughput):
 | Read on two nodes, mounted read-only | `pyarrow` | Both pods read all 30,000,000 rows, matching the manifest; writes refused |
 
 The job definitions are the starting point for the Data Mover's `stage` operation.
+
+A second study ran every operation by hand on one LoRA training run, with authentication on the
+store: upload from a workstation through presigned PUTs, stage, train from the staged volume,
+collect (a 295 MB adapter as one presigned multipart upload), archive with delete-after-verify,
+restore, and an evaluation of the restored adapter, which scored exactly as the original. The study,
+its scripts and its findings (folded into this document) are published in the `aif-lab` repository
+(`data-lifecycle/`).
 
 ## Concepts
 
@@ -138,14 +145,19 @@ The operator reconciles a DataTransfer by creating a **Data Mover Job**:
 
 - a transfer engine (`rclone` or `s5cmd`; `rclone` covers S3, volumes, NFS and HTTP with one tool
   and was used in the lab test) with parallel and multipart transfers, retries and resume;
-- credentials mounted from the targets' Secrets into the Job only, in the operator's namespace or a
-  mover namespace, never the project's;
+- credentials only where the Job runs outside the project. Operations between buckets (`ingest`,
+  `archive`, `restore`) run in the operator's or a mover namespace, with the targets' Secrets.
+  Operations on a volume (`stage`, `collect`, and verifying them) must run in the volume's namespace,
+  the project's, where users can read Secrets; those Jobs receive presigned URLs, one per object or
+  multipart part, scoped to the transfer and valid for its duration (or, on a store with STS,
+  short-lived credentials limited to the prefix);
 - placement from the targets' `moverPlacement`, so bulk traffic uses nodes on the storage network;
 - progress written back to the DataTransfer's status (bytes and objects done), so the UI and SDK
   can show it without the Job's logs;
-- verification: a manifest of object keys, sizes and SHA-256 written by the mover, checked after the
-  copy. (A multipart object's ETag is not an MD5 of the object; S3 additional checksums are used
-  where the store supports them.)
+- verification: a manifest of object keys, sizes and SHA-256, checked after the copy by a mover
+  Job reading every object back next to the store, not through the operator's own connection. (A
+  multipart object's ETag is not an MD5 of the object; S3 additional checksums are used where the
+  store supports them.)
 
 Operations:
 
@@ -215,9 +227,13 @@ operator applies the run's **artifact policy**:
 
 1. A `collect` DataTransfer copies the artifacts the policy keeps (final model or adapter, best
    checkpoint, logs, evaluation results) from the run volume to the Active target, under
-   `runs/<project>/<run>/`, with a manifest.
+   `runs/<project>/<run>/`, with a manifest. It takes two passes: an inventory of the run volume
+   (paths, sizes, SHA-256), from which the operator presigns the uploads, multipart for large files;
+   then the upload.
 2. The run volume is deleted once collection is verified, or after its warm period if the policy
-   keeps it for resumption.
+   keeps it for resumption. Kubernetes keeps a volume while pods that mounted it exist, so the run's
+   execution objects (its Job and pods, kept for `spec.retention.executionObjects`) are removed with
+   it; a restore goes to a new volume.
 3. The AIJob records what was kept and where.
 
 ```yaml
