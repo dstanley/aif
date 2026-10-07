@@ -1,11 +1,14 @@
 <script lang="ts">
-// The files on a run's kept checkpoint volume, under the volume in the run's detail, each with a
-// download. Read by a short-lived Job (see volumefiles.ts), so it takes a few seconds.
+// The files on a volume, one folder at a time, each with a download. Each folder opened is read by a
+// short-lived Job (see volumefiles.ts), so it takes a few seconds; a folder's files are sorted on the
+// volume and cut at MAX_ENTRIES, which the listing says, and a filter searches everything under it.
+// A file too big to download here gets the command that copies it instead.
 import { defineComponent, PropType } from 'vue';
 import type { CheckpointVolume } from '../checkpoints';
 import {
-  MAX_DOWNLOAD_BYTES, VolumeFile, decodeFile, fileScript, formatBytes, listScript, parseListing, runVolumeJob
+  FolderListing, FolderSort, MAX_DOWNLOAD_BYTES, MAX_ENTRIES, VolumeFile, VolumeFolder, decodeFile, fileScript, folderScript, formatBytes, parseFolder, runVolumeJob
 } from '../volumefiles';
+import { checkpointRun } from '../checkpoints';
 
 export default defineComponent({
   name:  'VolumeFiles',
@@ -13,7 +16,16 @@ export default defineComponent({
 
   data() {
     return {
-      loading: true, error: '', files: [] as VolumeFile[], busy: '' as string, fileError: '' as string,
+      loading:   true,
+      error:     '',
+      dir:       '',
+      listing:   null as FolderListing | null,
+      sort:      'name' as FolderSort,
+      filter:    '',
+      applied:   '', // the filter the listing shown was read with
+      busy:      '' as string,
+      fileError: '' as string,
+      copied:    '' as string,
     };
   },
 
@@ -21,6 +33,21 @@ export default defineComponent({
     cluster(): string {
       return String(this.$route.params.cluster || 'local');
     },
+    folders(): VolumeFolder[] {
+      return this.listing?.folders || [];
+    },
+    files(): VolumeFile[] {
+      return this.listing?.files || [];
+    },
+    crumbs(): { name: string; dir: string }[] {
+      const parts = this.dir ? this.dir.split('/') : [];
+
+      return parts.map((name: string, i: number) => ({ name, dir: parts.slice(0, i + 1).join('/') }));
+    },
+    cut(): boolean {
+      return !!this.listing && this.listing.totalFiles > this.files.length;
+    },
+    max: () => MAX_ENTRIES,
   },
 
   mounted() {
@@ -31,8 +58,14 @@ export default defineComponent({
     async load() {
       this.loading = true;
       this.error = '';
+      this.fileError = '';
+      const filter = this.filter.trim();
+
       try {
-        this.files = parseListing(await runVolumeJob(this.$store, this.cluster, this.checkpoint.namespace, this.checkpoint.name, listScript()));
+        const log = await runVolumeJob(this.$store, this.cluster, this.checkpoint.namespace, this.checkpoint.name, folderScript(this.dir, { sort: this.sort, filter }));
+
+        this.listing = parseFolder(log, this.dir, this.sort);
+        this.applied = filter;
       } catch (e: any) {
         this.error = this.explain(e);
       } finally {
@@ -40,7 +73,52 @@ export default defineComponent({
       }
     },
 
+    open(dir: string) {
+      this.dir = dir;
+      this.filter = '';
+      this.load();
+    },
+
+    setSort(s: FolderSort) {
+      this.sort = s;
+      this.load();
+    },
+
+    clearFilter() {
+      this.filter = '';
+      this.load();
+    },
+
+    /** The file's path within the folder shown (a search shows paths under it). */
+    shownPath(f: VolumeFile): string {
+      return this.dir && f.path.startsWith(`${ this.dir }/`) ? f.path.slice(this.dir.length + 1) : f.path;
+    },
+
+    /** How to copy a file too big for the browser: the CLI for a run's checkpoint volume, kubectl cp otherwise. */
+    copyCommand(f: VolumeFile): string {
+      if (checkpointRun(this.checkpoint.obj) || this.checkpoint.name.endsWith('-checkpoints')) {
+        return `rancher-ai -p ${ this.checkpoint.namespace } checkpoints get ${ this.checkpoint.name } ${ f.path } ./`;
+      }
+
+      return `# mount ${ this.checkpoint.name } in a pod in ${ this.checkpoint.namespace }, then: kubectl -n ${ this.checkpoint.namespace } cp <pod>:<mount path>/${ f.path } ./`;
+    },
+
+    async copy(text: string) {
+      try {
+        await navigator.clipboard.writeText(text);
+        this.copied = text;
+        setTimeout(() => {
+          if (this.copied === text) {
+            this.copied = '';
+          }
+        }, 2500);
+      } catch (e) {
+        this.copied = '';
+      }
+    },
+
     async download(f: VolumeFile) {
+      this.copied = '';
       this.busy = f.path;
       this.fileError = '';
       try {
@@ -72,7 +150,7 @@ export default defineComponent({
     },
 
     tooBig(f: VolumeFile): string {
-      return `${ f.path } is ${ formatBytes(f.size) }; downloads here are limited to ${ formatBytes(MAX_DOWNLOAD_BYTES) }. Mount ${ this.checkpoint.name } in a pod and use kubectl cp.`;
+      return `${ f.path } is ${ formatBytes(f.size) }; downloads here are limited to ${ formatBytes(MAX_DOWNLOAD_BYTES) }. Copy it with the command beside it.`;
     },
 
     explain(e: any): string {
@@ -95,11 +173,60 @@ export default defineComponent({
 
 <template>
   <div class="vf">
+    <div class="vf-bar">
+      <nav
+        class="vf-crumbs"
+        aria-label="Folder"
+      >
+        <a
+          href="#"
+          @click.prevent="open('')"
+        >{{ checkpoint.name }}</a>
+        <template
+          v-for="c in crumbs"
+          :key="c.dir"
+        >
+          <span class="text-muted">/</span>
+          <a
+            href="#"
+            @click.prevent="open(c.dir)"
+          >{{ c.name }}</a>
+        </template>
+      </nav>
+      <form
+        class="vf-filter"
+        @submit.prevent="load"
+      >
+        <input
+          v-model="filter"
+          type="search"
+          class="input-sm"
+          placeholder="Find files under this folder"
+          aria-label="Find files by name"
+        >
+      </form>
+      <select
+        :value="sort"
+        aria-label="Sort"
+        @change="setSort($event.target.value)"
+      >
+        <option value="name">
+          By name
+        </option>
+        <option value="size">
+          Largest first
+        </option>
+        <option value="modified">
+          Newest first
+        </option>
+      </select>
+    </div>
+
     <div
       v-if="loading"
       class="text-muted"
     >
-      <i class="icon icon-spinner icon-spin" /> Reading {{ checkpoint.name }}… (a short-lived pod mounts it read-only)
+      <i class="icon icon-spinner icon-spin" /> Reading {{ dir || checkpoint.name }}… (a short-lived pod mounts the volume read-only)
     </div>
     <div
       v-else-if="error"
@@ -114,42 +241,102 @@ export default defineComponent({
         Retry
       </button>
     </div>
-    <div
-      v-else-if="!files.length"
-      class="text-muted"
-    >
-      No files on the volume.
-    </div>
-    <table
-      v-else
-      class="vf-table"
-    >
-      <tr
-        v-for="f in files"
-        :key="f.path"
+    <template v-else-if="listing">
+      <p
+        v-if="listing.search"
+        class="text-muted vf-note"
       >
-        <td class="vf-path">
-          {{ f.path }}
-        </td>
-        <td class="text-muted">
-          {{ formatBytes(f.size) }}
-        </td>
-        <td class="text-muted">
-          {{ when(f.modified) }}
-        </td>
-        <td class="vf-right">
-          <button
-            class="btn role-tertiary btn-sm"
-            type="button"
-            :disabled="!!busy || !canDownload(f)"
-            :title="canDownload(f) ? `Download ${ f.path }` : tooBig(f)"
-            @click="download(f)"
-          >
-            <i :class="['icon', busy === f.path ? 'icon-spinner icon-spin' : 'icon-download']" /> Download
-          </button>
-        </td>
-      </tr>
-    </table>
+        {{ listing.totalFiles }} file{{ listing.totalFiles === 1 ? '' : 's' }} under {{ dir || 'the volume' }} with “{{ applied }}” in the name<template v-if="cut">
+          · showing the first {{ files.length }}
+        </template>
+        · <a
+          href="#"
+          @click.prevent="clearFilter"
+        >Clear</a>
+      </p>
+      <p
+        v-else-if="cut"
+        class="text-muted vf-note"
+      >
+        Showing {{ files.length }} of {{ listing.totalFiles }} files in this folder ({{ sort === 'name' ? 'by name' : sort === 'size' ? 'largest first' : 'newest first' }}). Find files by name to narrow it.
+      </p>
+      <p
+        v-if="!folders.length && !files.length"
+        class="text-muted"
+      >
+        {{ listing.search ? 'No file names match.' : 'This folder is empty.' }}
+      </p>
+      <table
+        v-else
+        class="vf-table"
+      >
+        <tr
+          v-if="dir && !listing.search"
+          class="vf-folder"
+        >
+          <td colspan="4">
+            <a
+              href="#"
+              @click.prevent="open(dir.split('/').slice(0, -1).join('/'))"
+            ><i class="icon icon-chevron-up" /> ..</a>
+          </td>
+        </tr>
+        <tr
+          v-for="f in listing.search ? [] : folders"
+          :key="'d/' + f.name"
+          class="vf-folder"
+        >
+          <td class="vf-path">
+            <a
+              href="#"
+              @click.prevent="open(dir ? `${ dir }/${ f.name }` : f.name)"
+            ><i class="icon icon-folder" /> {{ f.name }}/</a>
+          </td>
+          <td class="text-muted">
+            {{ formatBytes(f.bytes) }}
+          </td>
+          <td class="text-muted">
+            {{ f.files }} file{{ f.files === 1 ? '' : 's' }}
+          </td>
+          <td />
+        </tr>
+        <tr
+          v-for="f in files"
+          :key="f.path"
+        >
+          <td class="vf-path">
+            {{ shownPath(f) }}
+          </td>
+          <td class="text-muted">
+            {{ formatBytes(f.size) }}
+          </td>
+          <td class="text-muted">
+            {{ when(f.modified) }}
+          </td>
+          <td class="vf-right">
+            <button
+              v-if="canDownload(f)"
+              class="btn role-tertiary btn-sm"
+              type="button"
+              :disabled="!!busy"
+              :title="`Download ${ f.path }`"
+              @click="download(f)"
+            >
+              <i :class="['icon', busy === f.path ? 'icon-spinner icon-spin' : 'icon-download']" /> Download
+            </button>
+            <button
+              v-else
+              class="btn role-tertiary btn-sm"
+              type="button"
+              :title="`${ tooBig(f) } ${ copyCommand(f) }`"
+              @click="copy(copyCommand(f))"
+            >
+              <i class="icon icon-copy" /> {{ copied === copyCommand(f) ? 'Copied' : 'Copy command' }}
+            </button>
+          </td>
+        </tr>
+      </table>
+    </template>
     <div
       v-if="fileError"
       class="text-error vf-file-error"
@@ -165,4 +352,10 @@ export default defineComponent({
 .vf-path { font-family: monospace; font-size: 12px; word-break: break-all; }
 .vf-right { text-align: right; padding-right: 0 !important; }
 .vf-file-error { margin-top: 6px; }
+.vf-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+  select { width: auto; height: 28px; padding: 0 6px; font-size: 12px; }
+  .vf-filter input { width: 220px; height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--border-radius); background: var(--input-bg); color: var(--body-text); font-size: 12px; } }
+.vf-crumbs { flex: 1; font-family: monospace; font-size: 12px; display: flex; gap: 4px; flex-wrap: wrap; word-break: break-all; }
+.vf-note { margin: 0 0 6px; }
+.vf-folder a { font-weight: 600; }
 </style>

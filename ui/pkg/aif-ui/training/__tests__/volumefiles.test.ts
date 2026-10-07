@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  BEGIN, END, MAX_DOWNLOAD_BYTES, decodeFile, fileScript, formatBytes, jobManifest, parseListing, runVolumeJob, shellQuote
+  BEGIN, END, MAX_DOWNLOAD_BYTES, MAX_ENTRIES, NoFolderError, decodeFile, fileScript, folderScript, formatBytes, jobManifest, parseFolder, parseListing, runVolumeJob, safeDir, shellQuote
 } from '../volumefiles';
 
 describe('parseListing', () => {
@@ -91,5 +91,58 @@ describe('runVolumeJob', () => {
     expect(create.opt.headers['Content-Type']).toBe('application/json');
     expect(create.opt.url).toBe('/k8s/clusters/local/apis/batch/v1/namespaces/team-a/jobs');
     expect(calls.some((c) => c.opt.method === 'DELETE' && c.opt.url.includes('propagationPolicy=Background'))).toBe(true);
+  });
+});
+
+describe('folders', () => {
+  it('a folder path stays inside the volume', () => {
+    expect(safeDir('/hf/hub/')).toBe('hf/hub');
+    expect(safeDir('./a//b')).toBe('a/b');
+    expect(() => safeDir('hf/../../etc')).toThrow();
+  });
+
+  it('lists one folder: its subfolders with their totals, then its files sorted and cut', () => {
+    const s = folderScript('hf/hub', { sort: 'size' });
+
+    expect(s).toContain("cd '/ckpt/hf/hub'");
+    expect(s).toContain('-mindepth 1 -maxdepth 1 -type d ! -name lost+found');
+    expect(s).toContain("sort -t'|' -k2,2nr");
+    expect(s).toContain(`head -n ${ MAX_ENTRIES }`);
+    expect(s).toContain('echo "FILES $(find . -mindepth 1 -maxdepth 1 -type f | wc -l)"');
+  });
+
+  it('a filter searches everything under the folder by name, quoted for the shell', () => {
+    const s = folderScript('', { filter: "it's" });
+
+    expect(s).toContain('echo SEARCH');
+    expect(s).toContain(`-iname '*it'\\''s*'`);
+    expect(s).not.toContain('-maxdepth 1 -type f');
+  });
+
+  // as BusyBox printed it, in the Job's image, for a test volume
+  const ROOT = 'D|600|180300|1791414268|many\nD|3|3050|1791414268|hf\nD|1|3|1791414268|out dir\nFILES 1\nF|2|1791414268|./top.txt\n';
+
+  it('parses the listing: folders by name, files with their volume path', () => {
+    const l = parseFolder(ROOT, '');
+
+    expect(l.folders.map((f) => [f.name, f.files, f.bytes])).toEqual([['hf', 3, 3050], ['many', 600, 180300], ['out dir', 1, 3]]);
+    expect(l.files).toEqual([{ path: 'top.txt', size: 2, modified: new Date(1791414268000) }]);
+    expect(l).toMatchObject({ totalFiles: 1, search: false });
+  });
+
+  it('a subfolder\'s files carry its path, and a cut listing keeps the count before the cut', () => {
+    const l = parseFolder('FILES 600\nF|600|1|./f600.txt\nF|599|1|./f599.txt\n', 'many', 'size');
+
+    expect(l.files.map((f) => f.path)).toEqual(['many/f600.txt', 'many/f599.txt']);
+    expect(l.totalFiles).toBe(600);
+  });
+
+  it('a search is marked, and folders sort by size when the files do', () => {
+    expect(parseFolder('SEARCH\nFILES 111\nF|1|1|./many/f1.txt\n', '').search).toBe(true);
+    expect(parseFolder(ROOT, '', 'size').folders.map((f) => f.name)).toEqual(['many', 'hf', 'out dir']);
+  });
+
+  it('a folder that has gone says so', () => {
+    expect(() => parseFolder('NODIR\n', 'gone')).toThrow(NoFolderError);
   });
 });

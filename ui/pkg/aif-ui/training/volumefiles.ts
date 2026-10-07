@@ -26,6 +26,110 @@ export function listScript(): string {
   return `cd /ckpt && find . -path ./lost+found -prune -o -type f -exec stat -c '%s|%Y|%n' {} + | head -n ${ MAX_FILES }`;
 }
 
+// One folder at a time: a volume of any size lists in pages a person can read, one Job per folder
+// opened. A folder's subfolders come with how many files they hold and their total size; its files
+// with size and date, sorted on the volume and cut at MAX_ENTRIES, with the count before the cut, so a
+// listing that is cut says so. A filter searches the folder and everything under it, by file name.
+export const MAX_ENTRIES = 500;
+export type FolderSort = 'name' | 'size' | 'modified';
+
+export interface VolumeFolder {
+  name: string; // within the folder listed
+  files: number; // every file under it
+  bytes: number;
+  modified: Date | null;
+}
+
+export interface FolderListing {
+  dir: string; // '' for the volume's root
+  folders: VolumeFolder[];
+  files: VolumeFile[]; // path relative to the volume's root
+  totalFiles: number; // before the cut at MAX_ENTRIES
+  search: boolean; // a filter's matches from the whole subtree, not the folder's own files
+}
+
+/** A folder path within the volume: no leading or trailing slash, and no way out of it. */
+export function safeDir(dir: string): string {
+  const parts = (dir || '').split('/').filter((p) => p && p !== '.');
+
+  if (parts.includes('..')) {
+    throw new Error('A folder path cannot leave the volume');
+  }
+
+  return parts.join('/');
+}
+
+const SORT_KEYS: Record<FolderSort, string> = {
+  name:     "-t'|' -k4",
+  size:     "-t'|' -k2,2nr",
+  modified: "-t'|' -k3,3nr",
+};
+
+/** The listing of one folder (or, with a filter, the files under it whose name contains the filter). */
+export function folderScript(dir: string, opts: { sort?: FolderSort; filter?: string } = {}): string {
+  const d = safeDir(dir);
+  const sort = SORT_KEYS[opts.sort || 'name'];
+  const stat = "-exec stat -c 'F|%s|%Y|%n' {} +";
+  const cd = `cd ${ shellQuote(d ? `/ckpt/${ d }` : '/ckpt') } 2>/dev/null || { echo NODIR; exit 3; }`;
+  const filter = (opts.filter || '').trim();
+
+  if (filter) {
+    const match = `-path ./lost+found -prune -o -type f -iname ${ shellQuote(`*${ filter }*`) }`;
+
+    return `${ cd }; echo SEARCH; echo "FILES $(find . ${ match } -print | wc -l)"; ` +
+      `find . ${ match } ${ stat } | sort ${ sort } | head -n ${ MAX_ENTRIES }`;
+  }
+
+  return `${ cd }; ` +
+    "find . -mindepth 1 -maxdepth 1 -type d ! -name lost+found | while IFS= read -r d; do " +
+    "s=$(find \"$d\" -type f -exec stat -c %s {} + 2>/dev/null | awk '{s+=$1;n++} END{print n+0\"|\"s+0}'); " +
+    "echo \"D|$s|$(stat -c %Y \"$d\")|${d#./}\"; done; " +
+    'echo "FILES $(find . -mindepth 1 -maxdepth 1 -type f | wc -l)"; ' +
+    `find . -mindepth 1 -maxdepth 1 -type f ${ stat } | sort ${ sort } | head -n ${ MAX_ENTRIES }`;
+}
+
+export class NoFolderError extends Error {}
+
+export function parseFolder(log: string, dir: string, sort: FolderSort = 'name'): FolderListing {
+  const d = safeDir(dir);
+  const text = log || '';
+
+  if (/^NODIR$/m.test(text)) {
+    throw new NoFolderError(`${ d || 'The volume root' } is no longer on the volume.`);
+  }
+  const folders: VolumeFolder[] = [];
+  const files: VolumeFile[] = [];
+  let totalFiles = 0;
+
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    let m = line.match(/^D\|(\d+)\|(\d+)\|(\d+)\|(.+)$/);
+
+    if (m) {
+      folders.push({
+        name: m[4], files: Number(m[1]), bytes: Number(m[2]), modified: new Date(Number(m[3]) * 1000)
+      });
+      continue;
+    }
+    m = line.match(/^F\|(\d+)\|(\d+)\|\.\/(.+)$/);
+    if (m) {
+      files.push({ path: d ? `${ d }/${ m[3] }` : m[3], size: Number(m[1]), modified: new Date(Number(m[2]) * 1000) });
+      continue;
+    }
+    m = line.match(/^FILES (\d+)$/);
+    if (m) {
+      totalFiles = Number(m[1]);
+    }
+  }
+  const by = sort === 'size' ? (a: VolumeFolder, b: VolumeFolder) => b.bytes - a.bytes :
+    sort === 'modified' ? (a: VolumeFolder, b: VolumeFolder) => (b.modified?.getTime() || 0) - (a.modified?.getTime() || 0) :
+      (a: VolumeFolder, b: VolumeFolder) => a.name.localeCompare(b.name);
+
+  return {
+    dir: d, folders: folders.sort(by), files, totalFiles: Math.max(totalFiles, files.length), search: /^SEARCH$/m.test(text)
+  };
+}
+
 // The file travels base64-encoded between these lines. "@" is not in the base64 alphabet, so no line
 // of the encoding can be mistaken for them (a bare END can: base64 contains those letters).
 export const BEGIN = '@@AIF-BEGIN@@';
