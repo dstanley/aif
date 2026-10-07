@@ -11,7 +11,6 @@ import {
   FolderListing, FolderSort, MAX_DOWNLOAD_BYTES, MAX_ENTRIES, VolumeFile, VolumeFolder, VolumeIndex, decodeFile, fileScript, folderScript, formatBytes,
   indexScript, listFromIndex, parseFolder, parseIndex, runVolumeJob
 } from '../volumefiles';
-import { checkpointRun } from '../checkpoints';
 
 export default defineComponent({
   name:  'VolumeFiles',
@@ -129,13 +128,9 @@ export default defineComponent({
       return this.dir && f.path.startsWith(`${ this.dir }/`) ? f.path.slice(this.dir.length + 1) : f.path;
     },
 
-    /** How to copy a file too big for the browser: the CLI for a run's checkpoint volume, kubectl cp otherwise. */
+    /** How to copy a file too big for the browser: the CLI, which streams it from a pod of a short-lived Job. */
     copyCommand(f: VolumeFile): string {
-      if (checkpointRun(this.checkpoint.obj) || this.checkpoint.name.endsWith('-checkpoints')) {
-        return `rancher-ai -p ${ this.checkpoint.namespace } checkpoints get ${ this.checkpoint.name } ${ f.path } ./`;
-      }
-
-      return `# mount ${ this.checkpoint.name } in a pod in ${ this.checkpoint.namespace }, then: kubectl -n ${ this.checkpoint.namespace } cp <pod>:<mount path>/${ f.path } ./`;
+      return `rancher-ai -p ${ this.checkpoint.namespace } volumes get ${ this.checkpoint.name } ${ f.path } ./`;
     },
 
     async copy(text: string) {
@@ -185,7 +180,7 @@ export default defineComponent({
     },
 
     tooBig(f: VolumeFile): string {
-      return `${ f.path } is ${ formatBytes(f.size) }; downloads here are limited to ${ formatBytes(MAX_DOWNLOAD_BYTES) }. Copy it with the command beside it.`;
+      return `${ f.path } is ${ formatBytes(f.size) }; downloads here are limited to ${ formatBytes(MAX_DOWNLOAD_BYTES) }. Copy it with the command beside it, or ai.volumes.get() in the Python SDK.`;
     },
 
     explain(e: any): string {

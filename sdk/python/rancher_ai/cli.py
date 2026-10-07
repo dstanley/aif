@@ -117,6 +117,12 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--api-key", help="LiteLLM key (default $RANCHER_AI_API_KEY; none = the vLLM router directly)")
     ex.add_argument("--max-tokens", type=int, default=256)
 
+    vp = sub.add_parser("volumes", aliases=["volume"], help="copy files of any size off a volume in the project").add_subparsers(dest="verb", required=True)
+    vg = vp.add_parser("get", help="copy a file or a folder off a volume (needs pods/exec; AI Job Submitter has it)")
+    vg.add_argument("name", help="the volume (PersistentVolumeClaim)")
+    vg.add_argument("path", help="file or folder on the volume, from its root")
+    vg.add_argument("dest", nargs="?", default=".", help="where to put it (default: here)")
+    vg.add_argument("-q", "--quiet", action="store_true", help="no progress")
     kp = sub.add_parser("checkpoints", aliases=["checkpoint"], help="checkpoint volumes runs created and kept").add_subparsers(dest="verb", required=True)
     kl = kp.add_parser("list")
     kl.add_argument("-A", "--all-projects", action="store_true")
@@ -135,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     kr.add_argument("--yes", action="store_true", help="delete without asking (default: show what would go)")
 
     a = ap.parse_args(argv)
-    noun = {"profile": "profiles", "runs": "run", "endpoints": "endpoint", "checkpoint": "checkpoints"}.get(a.noun, a.noun)
+    noun = {"profile": "profiles", "runs": "run", "endpoints": "endpoint", "checkpoint": "checkpoints", "volume": "volumes"}.get(a.noun, a.noun)
 
     def emit(obj) -> None:
         if a.output == "json":
@@ -247,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
 
         elif noun == "checkpoints" and a.verb == "get":
             print(ai.checkpoints.get(a.name).get(a.path, a.dest))
+
+        elif noun == "volumes" and a.verb == "get":
+            print(ai.volumes.get(a.name, a.path, a.dest, quiet=a.quiet))
 
         elif noun == "checkpoints" and a.verb == "list":
             t = ai.checkpoints.table(all_projects=a.all_projects)

@@ -22,6 +22,7 @@ from kubernetes import client as k8s
 
 from . import install, profiles as prof, workloads
 from .checkpoints import Checkpoints
+from .volumes import Volumes
 from .display import Table
 from .kube import Connection
 from .profiles import Profile, ProfileError
@@ -46,6 +47,7 @@ class Client:
         self.runs = Runs(self)
         self.endpoints = Endpoints(self)
         self.checkpoints = Checkpoints(self)
+        self.volumes = Volumes(self)
 
     @property
     def project(self) -> str:

@@ -304,8 +304,8 @@ ai.checkpoints.delete_older_than(14, dry_run=False, confirm=True)
 ```
 
 `get` copies one file through a short-lived pod's log, so it takes files up to 7 MiB (the kubelet
-rotates container logs at 10 MiB); for larger ones, mount the volume in a pod and use `kubectl cp`.
-A destination ending in `/` is created if missing.
+rotates container logs at 10 MiB); for larger ones, use `volumes.get` below. A destination ending in
+`/` is created if missing.
 
 Only volumes the chart created for a run are managed (its labels and the `<run>-checkpoints` name),
 never a dataset or a shared PVC; a volume a pod mounts, or whose run is still active, is refused; and
@@ -313,6 +313,29 @@ nothing is deleted without confirmation. With Longhorn (reclaim policy Delete) d
 deletes the data. The Deployments page offers the same: *Browse files* (with a download per file,
 up to the same size) and *Delete volume* in a run's detail, and in the list of kept volumes whose
 run is gone.
+
+## Copying files of any size off a volume
+
+`volumes.get` copies a file or a folder of any size off any volume in the project: a run's
+checkpoints, its scratch space, a dataset. It mounts the volume read-only in a pod of a short-lived
+Job, streams the file over the exec API straight to disk (a folder as a tar, unpacked as it arrives,
+links copied as the files they point to), checks the copy against the size on the volume and, for a
+file named by its SHA-256 (a Hugging Face blob), against that hash, and deletes the Job.
+
+```python
+ai.volumes.get("dev-dl-lora-1-eval-taught-0-8ftvm-scratch",
+               "hf/hub/models--Qwen--Qwen2.5-1.5B-Instruct/blobs/dd924a11…", "~/Downloads/model.safetensors")
+ai.volumes.get("dev-dl-lora-1-checkpoints", "adapter", "~/Downloads/")   # a folder: ~/Downloads/adapter
+```
+
+```console
+$ rancher-ai -p team-a volumes get dev-dl-lora-1-checkpoints adapter ./
+```
+
+On the lab cluster a 2.9 GiB file takes about 95 seconds, and the notebook's memory stays under
+100 MiB. It needs `pods/exec` in the project, which *AI Job Submitter* grants; the volume must not
+be mounted by a running pod on another node. `examples/volumes/volume-get.sh` does the same with
+`kubectl` alone.
 
 ## Current limitations
 

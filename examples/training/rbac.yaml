@@ -64,6 +64,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log", "pods/status", "events"]
     verbs: ["get", "list", "watch"]
+  # Exec into a pod in the project: debugging a run, and the SDK's volumes.get (rancher-ai volumes
+  # get), which copies a file of any size off a volume through a pod of a short-lived Job. It reaches
+  # every pod in the project's namespaces, so the role is for the people who run work there.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
   # Deliberately read-only. A submitter must be able to see the GPU cap the Submit page checks
   # against -- otherwise pre-flight cannot tell them why a job will not fit -- but must not be able
   # to raise it. Read here, write in AI Platform Admin, is the entire Tier-1 quota model.
