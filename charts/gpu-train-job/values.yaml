@@ -178,6 +178,9 @@ storage:
     storageClass: ""
     accessMode: ""
     keep: true
+    # The built-in demo (torchrun with no job.script and no storage.configMap) gets no volume unless
+    # this is set: it writes only a small sample and a summary, not worth a volume kept per run.
+    forDemo: false
   checkpointMountPath: /mnt/checkpoints
   # Existing Secrets mounted read-only -- object-store credentials, an .s3cfg, a HF token file. The
   # chart never creates them. Files land under mountPath with the Secret's own keys as names.

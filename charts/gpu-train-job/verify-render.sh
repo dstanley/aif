@@ -110,5 +110,20 @@ sys.exit(0 if ok else 1)
 PY
 
 echo
+echo "checkpoint volumes:"
+pvcs() { helm template t . --set job.kind=job --set storage.checkpointCreate.enabled=true "$@" 2>/dev/null | grep -c "^kind: PersistentVolumeClaim"; }
+mounts() { helm template t . --set job.kind=job --set storage.checkpointCreate.enabled=true "$@" 2>/dev/null | grep -c "name: CHECKPOINT_DIR"; }
+check_ckpt() {
+  local desc="$1" want_pvc="$2" want_mount="$3"; shift 3
+  local p m; p=$(pvcs "$@"); m=$(mounts "$@")
+  if [ "$p" = "$want_pvc" ] && [ "$m" = "$want_mount" ]; then printf '✓ %s\n' "$desc"; else printf '✗ %s — %s PVC(s), %s mount(s)\n' "$desc" "$p" "$m"; fail=1; fi
+}
+check_ckpt "the demo gets no checkpoint volume"            0 0 --set job.mode=torchrun
+check_ckpt "a run with a script gets one"                  1 1 --set job.mode=torchrun --set job.script=print
+check_ckpt "a run with a code ConfigMap gets one"          1 1 --set job.mode=torchrun --set storage.configMap=cm
+check_ckpt "custom mode (the image's own code) gets one"   1 1 --set job.mode=custom --set 'job.command={/bin/true}'
+check_ckpt "the demo gets one with forDemo"                1 1 --set job.mode=torchrun --set storage.checkpointCreate.forDemo=true
+check_ckpt "an existing volume is mounted, even for the demo" 0 1 --set job.mode=torchrun --set storage.checkpointCreate.enabled=false --set storage.checkpointPVC=mine
+
 [ $fail -eq 0 ] && echo "chart render checks passed" || echo "chart render checks FAILED"
 exit $fail

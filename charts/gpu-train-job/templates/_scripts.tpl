@@ -82,6 +82,20 @@ while True:
         last, last_steps = now, steps
 dt = max(time.time() - t0, 1e-9)
 if rank == 0: print(f"world={world} {what} steps={steps} time={dt:.2f}s {per_step * steps / dt:.2f} {unit} average", flush=True)
+# A checkpoint, when the run has a checkpoint volume: a small sample of the tensor it worked on and
+# a summary, which a script of your own would replace with its model's state. What Browse files and
+# `rancher-ai volumes get` then find on the volume.
+ckpt = os.environ.get("CHECKPOINT_DIR", "")
+if rank == 0 and ckpt and os.path.isdir(ckpt) and os.access(ckpt, os.W_OK):
+    import json
+    sample = (m if world == 1 else x).flatten()[:65536].float().cpu()
+    torch.save({"sample": sample, "steps": steps}, os.path.join(ckpt, "demo-sample.pt"))
+    with open(os.path.join(ckpt, "summary.json"), "w") as f:
+        json.dump({"what": what, "world": world, "steps": steps, "seconds": round(dt, 2),
+                   "rate": round(per_step * steps / dt, 2), "unit": unit,
+                   "device": torch.cuda.get_device_name(local) if gpu else "cpu",
+                   "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f, indent=2)
+    print(f"saved demo-sample.pt and summary.json to {ckpt}", flush=True)
 dist.barrier(); dist.destroy_process_group()
 {{- end -}}
 {{- end -}}

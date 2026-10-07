@@ -3,7 +3,7 @@ A checkpoint/output volume for this run, dynamically provisioned from a StorageC
 default) Helm leaves it when the release is uninstalled, so outputs outlive the run and its cleanup;
 delete it by hand when done. ReadWriteMany for a multi-node run so every rank can write.
 */ -}}
-{{- if and .Values.storage.checkpointCreate.enabled (not .Values.storage.checkpointPVC) }}
+{{- if include "gpu-train-job.createsCheckpoints" . }}
 {{- $c := .Values.storage.checkpointCreate }}
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -73,10 +73,24 @@ kai-fraction
 The checkpoint claim the pods mount: an existing PVC (storage.checkpointPVC), or the one this release
 creates (storage.checkpointCreate). "" = no checkpoint volume.
 */}}
+{{/* The chart's own demo: torchrun with neither a script of the run's own (job.script) nor a code
+ConfigMap (storage.configMap). It writes little, so it gets no new checkpoint volume of its own. */}}
+{{- define "gpu-train-job.isDemo" -}}
+{{- if and (eq .Values.job.mode "torchrun") (not .Values.job.script) (not .Values.storage.configMap) -}}true{{- end -}}
+{{- end -}}
+
+{{/* Whether the chart creates the run's checkpoint volume: asked for, no existing one named, and not
+for a demo run unless checkpointCreate.forDemo says so. A profile can turn checkpointCreate on for
+every run without the demos each keeping an empty volume. */}}
+{{- define "gpu-train-job.createsCheckpoints" -}}
+{{- $c := .Values.storage.checkpointCreate -}}
+{{- if and $c.enabled (not .Values.storage.checkpointPVC) (or (not (include "gpu-train-job.isDemo" .)) $c.forDemo) -}}true{{- end -}}
+{{- end -}}
+
 {{- define "gpu-train-job.checkpointClaim" -}}
 {{- if .Values.storage.checkpointPVC -}}
 {{ .Values.storage.checkpointPVC }}
-{{- else if .Values.storage.checkpointCreate.enabled -}}
+{{- else if include "gpu-train-job.createsCheckpoints" . -}}
 {{ include "gpu-train-job.fullname" . }}-checkpoints
 {{- end -}}
 {{- end -}}
