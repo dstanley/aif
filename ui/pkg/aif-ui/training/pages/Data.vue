@@ -22,6 +22,7 @@ const COLUMNS: { key: string; label: string; sort?: VolumeSortKey }[] = [
   { key: 'class', label: 'Storage class' },
   { key: 'use', label: 'Status' },
   { key: 'created', label: 'Created', sort: 'created' },
+  { key: 'expires', label: 'Expires' },
 ];
 
 const KIND_LABEL: Record<string, string> = { checkpoint: 'Checkpoints', scratch: 'Scratch', other: 'Other' };
@@ -189,8 +190,22 @@ export default defineComponent({
 
     freeToDelete,
 
-    dueText(r: VolumeRow): string {
-      return until(r.cleanupDue, this.now);
+    /** When the volume goes by itself: scratch with its run's pods, checkpoints never. */
+    expires(r: VolumeRow): { text: string; hint: string } {
+      if (r.deleting || r.kind === 'other') {
+        return { text: '—', hint: '' };
+      }
+      if (r.kind === 'checkpoint') {
+        return {
+          text: 'Kept',
+          hint: r.heldBy.length && r.cleanupDue ? `Kept until deleted. It can be deleted once the run is cleaned up, ${ until(r.cleanupDue, this.now) } (${ new Date(r.cleanupDue).toLocaleString() }).` : 'Kept until deleted.',
+        };
+      }
+      if (r.cleanupDue) {
+        return { text: until(r.cleanupDue, this.now), hint: `Removed with the run's pods when the run is cleaned up, ${ new Date(r.cleanupDue).toLocaleString() }.` };
+      }
+
+      return { text: 'After the run', hint: 'Removed with the run\'s pods when the run is cleaned up, after its retention (7 days by default) once it finishes.' };
     },
 
     cleanUpHint(r: VolumeRow): string {
@@ -437,7 +452,7 @@ export default defineComponent({
               <span
                 v-else-if="r.heldBy.length && r.run"
                 v-clean-tooltip="`The run's finished pod (${ r.heldBy.join(', ') }) is kept until the run is cleaned up, and the volume cannot be deleted before then`"
-              >Held until the run is cleaned up<template v-if="r.cleanupDue"> ({{ dueText(r) }})</template></span>
+              >Held until the run is cleaned up</span>
               <span
                 v-else-if="r.heldBy.length"
                 v-clean-tooltip="`${ r.heldBy.join(', ') } finished but still names the volume; it can be deleted once that pod is gone`"
@@ -449,6 +464,16 @@ export default defineComponent({
             </td>
             <td :title="r.created">
               {{ ago(r.created) }}
+            </td>
+            <td>
+              <span
+                v-if="expires(r).hint"
+                v-clean-tooltip="expires(r).hint"
+              >{{ expires(r).text }}</span>
+              <span
+                v-else
+                class="text-muted"
+              >{{ expires(r).text }}</span>
             </td>
             <td class="td-right">
               <button
