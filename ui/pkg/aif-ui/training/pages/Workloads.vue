@@ -1,30 +1,29 @@
 <script lang="ts">
-// Workloads: every training run and inference endpoint in one table (runs.ts builds the rows).
-// Training runs are gpu-train-job releases (trainingruns.ts); inference endpoints are the AI Factory
-// AIWorkloads made from profiles. A row expands to its pods, logs and YAML (RunDetail).
+// A cluster's Jobs: its AIJob records, a page at a time (runs.ts builds the rows). The page is
+// fetched, sorted and filtered by the server (jobspage.ts), and then only the pods, Jobs and volumes
+// of the rows shown, by their job-id label, so the page stays the same size however many runs the
+// cluster has kept. A row expands to its pods, logs and YAML (RunDetail).
 import { defineComponent } from 'vue';
 import jsyaml from 'js-yaml';
 import Loading from '@shell/components/Loading.vue';
 import Banner from '@components/Banner/Banner.vue';
 import { saferDump } from '@shell/utils/create-yaml';
-import { AIJOB_TYPE } from '../aijob';
 import RunDetail from '../components/RunDetail.vue';
-import VolumeFiles from '../components/VolumeFiles.vue';
 import YamlViewer, { YamlDoc } from '../components/YamlViewer.vue';
-import { SUBMIT_PAGE, TYPES } from '../config';
+import { SUBMIT_PAGE } from '../config';
 import { inClusterSection, trainingLink } from '../section';
-import { AIWORKLOAD_TYPE, BLUEPRINT_TYPE } from '../inference';
 import { profilesFrom } from '../profiles';
 import {
-  ago, ALL_RUNS, filterRuns, inferenceToRuns, pageOf, Run, RunFilter, RunSortKey, RunState, sortRuns, trainingToRuns, linkedRun
+  ago, ALL_RUNS, pageOf, Run, RunFilter, RunSortKey, RunState, trainingToRuns, linkedRun
 } from '../runs';
 import { CheckpointVolume, checkpointVolumes } from '../checkpoints';
 import { trainingRuns } from '../trainingruns';
+import {
+  fetchJobsPage, fetchProfileConfigMaps, fetchRelated, JOB_STATES, NO_RELATED, RelatedObjects, SORT_FIELDS
+} from '../jobspage';
 
-const STATES: RunState[] = ['Running', 'Deploying', 'Pending', 'Queued', 'Degraded', 'Suspended', 'Completed', 'Failed', 'Cancelled'];
 const COLUMNS: { key: RunSortKey; label: string }[] = [
   { key: 'name', label: 'Name' },
-  { key: 'type', label: 'Type' },
   { key: 'profile', label: 'Profile' },
   { key: 'project', label: 'Namespace' },
   { key: 'resources', label: 'Resources' },
@@ -40,16 +39,19 @@ export default defineComponent({
   // with its expandable rows, without the title, toolbar, pager or kept volumes
   props:      { fixedTab: { type: String, default: null }, compact: { type: Number, default: 0 } },
   components: {
-    Loading, Banner, RunDetail, VolumeFiles, YamlViewer
+    Loading, Banner, RunDetail, YamlViewer
   },
 
   data() {
     return {
-      // the kept volume (namespace/name) whose files are open, in the list of volumes without a run
-      browsingVolume: '' as string,
-      raw: {
-        jobs: [] as any[], pytorchJobs: [] as any[], kueueWorkloads: [] as any[], apps: [] as any[], pods: [] as any[], claimTemplates: [] as any[], aiWorkloads: [] as any[], blueprints: [] as any[], configMaps: [] as any[], pvcs: [] as any[], aiJobs: [] as any[]
-      },
+      // one page of AIJob records, and the objects of those runs only
+      aiJobs:       [] as any[],
+      related:      NO_RELATED as RelatedObjects,
+      total:        0,
+      serverPaged:  true,
+      configMaps:   [] as any[], // the compute profiles' ConfigMaps
+      loadSeq:      0, // a response older than the latest request is dropped
+      textTimer:    null as any,
       error:  '' as string,
       // ?project=<namespace>&state=<state>&q=<text> preset the filters, so other pages can link to a view
       filter: {
@@ -75,11 +77,12 @@ export default defineComponent({
   },
 
   async fetch() {
+    this.configMaps = await fetchProfileConfigMaps(this.$store);
     await this.load();
   },
 
   mounted() {
-    // Jobs and endpoints change state on their own; a forced re-list keeps the table honest.
+    // Runs change state on their own: re-read the page shown (a page, not the cluster).
     this.timer = setInterval(() => {
       this.now = Date.now();
       this.load();
@@ -89,18 +92,18 @@ export default defineComponent({
 
   beforeUnmount() {
     clearInterval(this.timer);
+    clearTimeout(this.textTimer);
     document.removeEventListener('click', this.closeMenus);
   },
 
   computed: {
-    // compact (a cluster's Overview, training runs only): no Type column, every row would say Training
     columns(): { key: RunSortKey; label: string }[] {
-      return this.compact ? COLUMNS.filter((c) => c.key !== 'type') : COLUMNS;
+      return COLUMNS;
     },
     clusterSection(): boolean {
       return inClusterSection(this.$route);
     },
-    states:  () => STATES,
+    states:  () => JOB_STATES,
 
     // The tab is in the URL (?tab=training|inference), so a link opens the same view.
     tab(): '' | 'training' | 'inference' {
@@ -116,55 +119,80 @@ export default defineComponent({
     },
 
     all(): Run[] {
-      const r = this.raw;
-      const profiles = profilesFrom(r.configMaps, (s: string) => jsyaml.load(s));
-      const training = trainingToRuns(trainingRuns({
-        jobs: r.jobs, pytorchJobs: r.pytorchJobs, kueueWorkloads: r.kueueWorkloads, apps: r.apps, pods: r.pods, aiJobs: r.aiJobs
-      }), profiles, r.claimTemplates);
+      const rel = this.related;
+      const profiles = profilesFrom(this.configMaps, (x: string) => jsyaml.load(x));
+      const order = new Map(this.aiJobs.map((j: any, i: number) => [`${ j.metadata?.namespace }/${ j.metadata?.name }`, i]));
+      const rows = trainingToRuns(trainingRuns({
+        jobs: rel.jobs, pytorchJobs: rel.pytorchJobs, kueueWorkloads: rel.kueueWorkloads, apps: [], pods: rel.pods, aiJobs: this.aiJobs
+      }), profiles, rel.claimTemplates);
 
-      return [...training, ...inferenceToRuns(r.aiWorkloads, r.blueprints, profiles, r.pods)];
+      // the server's order, and only the page's records (a Job of another run cannot appear)
+      return rows
+        .filter((r: Run) => order.has(`${ r.namespace }/${ r.name }`))
+        .sort((x: Run, y: Run) => (order.get(`${ x.namespace }/${ x.name }`) as number) - (order.get(`${ y.namespace }/${ y.name }`) as number));
     },
 
     /** Every run's kept checkpoint volume (<run>-checkpoints, made by the chart), with who still uses it. */
     checkpoints(): CheckpointVolume[] {
-      return checkpointVolumes(this.raw.pvcs, this.raw.pods, this.raw.jobs);
+      return checkpointVolumes(this.related.pvcs, this.related.pods, this.related.jobs);
     },
-    /** Kept checkpoint volumes whose run is gone from the list (uninstalled or cleaned up). */
-    orphanCheckpoints(): CheckpointVolume[] {
-      // training outputs: not on the Inference tab
-      if (this.tab === 'inference') {
-        return [];
-      }
-      const runs = new Set(this.all.filter((r: Run) => r.type === 'training').map((r: Run) => `${ r.namespace }/${ r.name }`));
-
-      return this.checkpoints.filter((k) => !runs.has(`${ k.namespace }/${ k.run }`) && (!this.filter.project || k.namespace === this.filter.project));
-    },
-    counts(): Record<string, number> {
-      return {
-        '':        this.all.length,
-        training:  this.all.filter((x: Run) => x.type === 'training').length,
-        inference: this.all.filter((x: Run) => x.type === 'inference').length,
-      };
-    },
-
+    /** The namespaces a run can be in: every namespace this user can see on the cluster. */
     projects(): string[] {
-      return [...new Set(this.all.map((r: Run) => r.namespace))].sort() as string[];
+      return (this.$store.getters['cluster/all']('namespace') || []).map((n: any) => n.metadata?.name || n.id).filter(Boolean).sort();
     },
 
     profileOptions(): { value: string; label: string }[] {
-      const seen = new Map<string, string>();
-
-      this.all.forEach((r: Run) => seen.set(r.profile || '(custom)', r.profile ? r.profileLabel : 'Custom (form)'));
-
-      return [...seen.entries()].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
+      return profilesFrom(this.configMaps, (x: string) => jsyaml.load(x))
+        .filter((p: any) => p.type !== 'inference')
+        .map((p: any) => ({ value: p.name, label: p.displayName || p.name }))
+        .sort((a: any, b: any) => a.label.localeCompare(b.label));
     },
 
     shown(): Run[] {
-      return sortRuns(filterRuns(this.all, { ...this.filter, type: this.tab }), this.sortKey, this.sortDesc);
+      return this.all;
+    },
+    filtered(): boolean {
+      const f = this.filter;
+
+      return !!(f.text || f.project || f.profile || f.state);
     },
 
     paged(): { items: Run[]; page: number; pages: number; from: number; to: number } {
-      return this.compact ? pageOf(this.shown, 1, this.compact) : pageOf(this.shown, this.page, this.pageSize);
+      if (this.compact) {
+        return pageOf(this.all, 1, this.compact);
+      }
+      const pages = Math.max(1, Math.ceil(this.total / this.pageSize));
+      const from = this.total ? (this.page - 1) * this.pageSize + 1 : 0;
+
+      return {
+        items: this.all, page: this.page, pages, from, to: Math.min(this.total, from + this.all.length - 1)
+      };
+    },
+    /** The page buttons: the first, the last, and two either side of the current one. */
+    pageButtons(): (number | '…')[] {
+      const n = this.paged.pages; const c = this.paged.page; const out: (number | '…')[] = [];
+
+      for (let i = 1; i <= n; i++) {
+        if (i === 1 || i === n || Math.abs(i - c) <= 2) {
+          out.push(i);
+        } else if (out[out.length - 1] !== '…') {
+          out.push('…');
+        }
+      }
+
+      return out;
+    },
+    query(): any {
+      return {
+        page:      this.compact ? 1 : this.page,
+        pageSize:  this.compact || this.pageSize,
+        sortKey:   this.compact ? 'created' : this.sortKey,
+        sortDesc:  this.compact ? true : this.sortDesc,
+        text:      this.filter.text,
+        namespace: this.filter.project,
+        profile:   this.filter.profile,
+        state:     this.filter.state,
+      };
     },
 
     routes(): Record<string, any> {
@@ -185,12 +213,25 @@ export default defineComponent({
         this.linkOpened = true;
       }
     },
-    // a filter change can leave the current page empty
-    filter: {
-      deep: true,
-      handler() {
-        this.page = 1;
-      },
+    // a filter change starts again at the first page; typing waits for a pause
+    'filter.text'() {
+      clearTimeout(this.textTimer);
+      this.textTimer = setTimeout(() => this.restart(), 300);
+    },
+    'filter.project'() {
+      this.restart();
+    },
+    'filter.profile'() {
+      this.restart();
+    },
+    'filter.state'() {
+      this.restart();
+    },
+    page() {
+      this.load();
+    },
+    pageSize() {
+      this.restart();
     },
     tab() {
       this.page = 1;
@@ -198,57 +239,65 @@ export default defineComponent({
   },
 
   methods: {
-    async list(type: string): Promise<any[]> {
-      if (!this.$store.getters['cluster/schemaFor'](type)) {
-        return [];
-      }
-      try {
-        return await this.$store.dispatch('cluster/findAll', { type, opt: { force: true } });
-      } catch (e) {
-        return [];
-      }
-    },
-
+    /** The page of runs shown, then their pods, Jobs and volumes. A late answer to an earlier request is dropped. */
     async load() {
-      if (this.refreshing) {
-        return;
-      }
+      const seq = ++this.loadSeq;
+
       this.refreshing = true;
       try {
-        const [jobs, pytorchJobs, kueueWorkloads, apps, pods, claimTemplates, aiWorkloads, blueprints, configMaps, pvcs, aiJobs] = await Promise.all([
-          this.list(TYPES.JOB), this.list(TYPES.PYTORCH_JOB), this.list(TYPES.WORKLOAD), this.list(TYPES.APP), this.list(TYPES.POD),
-          this.list(TYPES.RESOURCE_CLAIM_TEMPLATE), this.list(AIWORKLOAD_TYPE), this.list(BLUEPRINT_TYPE), this.list('configmap'),
-          this.list(TYPES.PVC), this.list(AIJOB_TYPE),
-        ]);
+        const page = await fetchJobsPage(this.$store, this.query);
 
-        this.raw = {
-          jobs, pytorchJobs, kueueWorkloads, apps, pods, claimTemplates, aiWorkloads, blueprints, configMaps, pvcs, aiJobs
-        };
+        if (seq !== this.loadSeq) {
+          return;
+        }
+        const related = await fetchRelated(this.$store, page.aiJobs);
+
+        if (seq !== this.loadSeq) {
+          return;
+        }
+        this.aiJobs = page.aiJobs;
+        this.total = page.count;
+        this.serverPaged = page.serverPaged;
+        this.related = related;
+        this.error = '';
+        // a page past the end (runs deleted, a narrower filter): the last page instead
+        if (!this.compact && this.page > 1 && !page.aiJobs.length && page.count) {
+          this.page = Math.ceil(page.count / this.pageSize);
+        }
       } catch (e: any) {
-        this.error = `Could not list workloads: ${ e?.message || e }`;
+        if (seq === this.loadSeq) {
+          this.error = `Could not list runs: ${ e?.message || e?.data?.message || e }`;
+        }
       } finally {
-        this.refreshing = false;
+        if (seq === this.loadSeq) {
+          this.refreshing = false;
+        }
       }
     },
 
-    tabRoute(t: string) {
-      const query = { ...this.$route.query };
-
-      if (t) {
-        query.tab = t;
-      } else {
-        delete query.tab;
-      }
-
-      return { query };
+    sortable(key: RunSortKey): boolean {
+      return !this.compact && !!SORT_FIELDS[key];
     },
 
     sortBy(key: RunSortKey) {
+      if (!this.sortable(key)) {
+        return;
+      }
       if (this.sortKey === key) {
         this.sortDesc = !this.sortDesc;
       } else {
         this.sortKey = key;
-        this.sortDesc = key === 'created' || key === 'resources';
+        this.sortDesc = key === 'created';
+      }
+      this.restart();
+    },
+
+    /** Back to the first page and load it (the page watcher loads when the page changes). */
+    restart() {
+      if (this.page === 1) {
+        this.load();
+      } else {
+        this.page = 1;
       }
     },
 
@@ -295,9 +344,11 @@ export default defineComponent({
             label: job.kind || 'Job', yaml: await this.fetchYaml(job), filename: r.name, hint: 'The live object. Copy it into Submit → YAML → Kubernetes manifest to run a variant of this job.'
           });
         }
-        if (app?.spec?.values) {
+        const values = app?.spec?.values || r.training?.aiJob?.spec?.values;
+
+        if (values) {
           docs.push({
-            label: 'Helm values', yaml: saferDump(app.spec.values), filename: `${ r.name }-values`, hint: 'The values this run was installed with. Copy them into Submit → YAML → Helm values to rerun with tweaks.'
+            label: 'Helm values', yaml: saferDump(values), filename: `${ r.name }-values`, hint: 'The values this run was installed with. Copy them into Submit → YAML → Helm values to rerun with tweaks.'
           });
         }
         if (r.inference?.workload) {
@@ -510,29 +561,17 @@ export default defineComponent({
       @close="notice = ''"
     />
 
-    <div
-      v-if="!fixedTab && !clusterSection && !compact"
-      class="tj-tabs"
-    >
-      <router-link
-        v-for="tb in [{ key: '', label: 'All' }, { key: 'training', label: 'Training' }, { key: 'inference', label: 'Inference' }]"
-        :key="tb.key"
-        :to="tabRoute(tb.key)"
-        :class="['tj-tab', { active: tab === tb.key }]"
-      >
-        {{ tb.label }} ({{ counts[tb.key] }})
-      </router-link>
-    </div>
+
 
 
     <p
-      v-if="!all.length"
+      v-if="!all.length && !refreshing && !filtered"
       class="text-muted"
     >
-      Nothing is running yet. Start a training run or an inference endpoint with New run.
+      Nothing has run yet. Start a training run or an inference endpoint with New run.
     </p>
     <p
-      v-else-if="!shown.length"
+      v-else-if="!all.length && !refreshing"
       class="text-muted"
     >
       No runs match the filters.
@@ -547,12 +586,12 @@ export default defineComponent({
           <th
             v-for="c in columns"
             :key="c.key"
-            :class="['tj-sortable', { sorted: sortKey === c.key }]"
+            :class="{ 'tj-sortable': sortable(c.key), sorted: !compact && sortKey === c.key }"
             @click="sortBy(c.key)"
           >
             {{ c.label }}
             <i
-              v-if="sortKey === c.key"
+              v-if="!compact && sortKey === c.key"
               :class="['icon', sortDesc ? 'icon-chevron-down' : 'icon-chevron-up']"
             />
           </th>
@@ -572,9 +611,6 @@ export default defineComponent({
                 :aria-expanded="!!open[r.key]"
                 @click.prevent="toggleOpen(r)"
               ><i :class="['icon', open[r.key] ? 'icon-chevron-down' : 'icon-chevron-right', 'tj-chev']" />{{ r.name }}</a>
-            </td>
-            <td v-if="!compact">
-              {{ r.type === 'training' ? 'Training' : 'Endpoint' }}
             </td>
             <td>{{ r.profileLabel }}</td>
             <td>{{ r.namespace }}</td>
@@ -642,10 +678,10 @@ export default defineComponent({
     </table>
 
     <div
-      v-if="shown.length && !compact"
+      v-if="total && !compact"
       class="tj-pager"
     >
-      <span class="text-muted">{{ paged.from }}–{{ paged.to }} of {{ shown.length }} runs</span>
+      <span class="text-muted">{{ paged.from }}–{{ paged.to }} of {{ total }} run{{ total === 1 ? '' : 's' }}</span>
       <div class="tj-pages">
         <button
           class="btn role-secondary btn-sm"
@@ -655,14 +691,22 @@ export default defineComponent({
         >
           <i class="icon icon-chevron-left" />
         </button>
-        <button
-          v-for="n in paged.pages"
-          :key="n"
-          :class="['btn', 'btn-sm', n === paged.page ? 'role-primary' : 'role-secondary']"
-          @click="page = n"
+        <template
+          v-for="(n, i) in pageButtons"
+          :key="i"
         >
-          {{ n }}
-        </button>
+          <span
+            v-if="n === '…'"
+            class="text-muted"
+          >…</span>
+          <button
+            v-else
+            :class="['btn', 'btn-sm', n === paged.page ? 'role-primary' : 'role-secondary']"
+            @click="page = n"
+          >
+            {{ n }}
+          </button>
+        </template>
         <button
           class="btn role-secondary btn-sm"
           :disabled="paged.page >= paged.pages"
@@ -689,62 +733,7 @@ export default defineComponent({
       </div>
     </div>
 
-    <section
-      v-if="orphanCheckpoints.length && !compact"
-      class="tj-orphans"
-    >
-      <h3>Kept checkpoint volumes without a run</h3>
-      <p class="text-muted">
-        Outputs of runs that have been removed. They stay until deleted; deleting one deletes its data.
-      </p>
-      <table class="tj-table">
-        <thead>
-          <tr>
-            <th>Volume</th><th>Run</th><th>Project</th><th>Size</th><th>Storage class</th><th>Created</th><th />
-          </tr>
-        </thead>
-        <tbody>
-          <template
-            v-for="k in orphanCheckpoints"
-            :key="k.namespace + '/' + k.name"
-          >
-            <tr>
-              <td>{{ k.name }}</td>
-              <td>{{ k.run }}</td>
-              <td>{{ k.namespace }}</td>
-              <td>{{ k.size }}</td>
-              <td>{{ k.storageClass || '—' }}</td>
-              <td>{{ k.created }}</td>
-              <td class="tj-right">
-                <button
-                  class="btn role-tertiary btn-sm"
-                  type="button"
-                  :disabled="k.inUseBy.length > 0"
-                  :aria-expanded="browsingVolume === k.namespace + '/' + k.name"
-                  :title="k.inUseBy.length ? `In use by ${ k.inUseBy.join(', ') }` : 'List the files on the volume, and download them'"
-                  @click="browsingVolume = browsingVolume === k.namespace + '/' + k.name ? '' : k.namespace + '/' + k.name"
-                >
-                  <i class="icon icon-folder" /> {{ browsingVolume === k.namespace + '/' + k.name ? 'Hide files' : 'Browse files' }}
-                </button>
-                <button
-                  class="btn role-tertiary btn-sm"
-                  :disabled="k.inUseBy.length > 0"
-                  :title="k.inUseBy.length ? `In use by ${ k.inUseBy.join(', ') }` : 'Delete the volume and its data'"
-                  @click="removeCheckpoint(k)"
-                >
-                  <i class="icon icon-delete" /> Delete
-                </button>
-              </td>
-            </tr>
-            <tr v-if="browsingVolume === k.namespace + '/' + k.name">
-              <td colspan="7">
-                <VolumeFiles :checkpoint="k" />
-              </td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
-    </section>
+
 
     <YamlViewer
       v-if="yaml.open"
@@ -758,7 +747,6 @@ export default defineComponent({
 </template>
 
 <style lang="scss" scoped>
-.tj-orphans { margin-top: 28px; h3 { margin-bottom: 4px; } }
 
 .tj-workloads { padding: 12px 20px 20px; &.embedded { padding: 0; } }
 .tj-new { position: relative; }

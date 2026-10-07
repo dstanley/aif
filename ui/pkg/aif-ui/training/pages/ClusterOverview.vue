@@ -13,6 +13,7 @@ import { AIJOB_TYPE } from '../aijob';
 import { loadClusterLabel } from '../cluster';
 import { trainingLink } from '../section';
 import { jobCounts } from '../clusteroverview';
+import { fetchJobCounts } from '../jobspage';
 import Workloads from './Workloads.vue';
 
 const vm = getCurrentInstance()!.proxy as any;
@@ -23,10 +24,10 @@ const loading = ref(true);
 const error = ref('');
 const clusterName = ref(cluster);
 const overview = ref<Overview | null>(null);
-const jobs = ref<any[]>([]);
+const counts = ref({
+  running: 0, queued: 0, completed: 0, failed: 0
+});
 const hasAIJobs = ref(true);
-
-const counts = computed(() => jobCounts(jobs.value));
 const catalogRoute = computed(() => trainingLink(vm.$route, 'catalog'));
 const jobsRoute = computed(() => trainingLink(vm.$route, 'jobs'));
 const projectsRoute = computed(() => trainingLink(vm.$route, 'projects'));
@@ -35,13 +36,16 @@ async function refresh() {
   error.value = '';
   try {
     hasAIJobs.value = !!store.getters['cluster/schemaFor'](AIJOB_TYPE);
-    const [o, j] = await Promise.all([
+    // counts from the server, not every record; without the SQL cache, counted from the full list
+    const countJobs = async() => (await fetchJobCounts(store)) ||
+      jobCounts(await store.dispatch('cluster/findAll', { type: AIJOB_TYPE }) || []);
+    const [o, c] = await Promise.all([
       loadOverview(store, cluster),
-      hasAIJobs.value ? store.dispatch('cluster/findAll', { type: AIJOB_TYPE, opt: { force: true } }) : Promise.resolve([]),
+      hasAIJobs.value ? countJobs() : Promise.resolve(counts.value),
     ]);
 
     overview.value = o;
-    jobs.value = j || [];
+    counts.value = c;
   } catch (e: any) {
     error.value = `Could not read this cluster: ${ e?.message || e }`;
   } finally {

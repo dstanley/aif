@@ -9,6 +9,7 @@ import {
 } from './quota';
 import { AiProject, assembleProjects } from './projects';
 import { buildIndexFromResourceQuotas, isGpuQuota } from './resourcequota';
+import { fetchGpuPods } from './jobspage';
 
 export interface OverviewProject {
   id: string;
@@ -71,14 +72,15 @@ async function findAll(store: any, which: 'cluster' | 'management', type: string
 
 export async function loadOverview(store: any, clusterId: string): Promise<Overview> {
   const kai = !!store.getters['cluster/schemaFor'](TYPES.KAI_QUEUE);
-  const [queues, namespaces, nodes, pods, rancherProjects, resourceQuotas] = await Promise.all([
+  const [queues, namespaces, nodes, rancherProjects, resourceQuotas] = await Promise.all([
     kai ? findAll(store, 'cluster', TYPES.KAI_QUEUE) : Promise.resolve([]),
     findAll(store, 'cluster', TYPES.NAMESPACE),
     findAll(store, 'cluster', TYPES.NODE),
-    findAll(store, 'cluster', TYPES.POD),
     findAll(store, 'management', TYPES.RANCHER_PROJECT),
     kai ? Promise.resolve([]) : findAll(store, 'cluster', TYPES.RESOURCE_QUOTA),
   ]);
+  // only the pods that can hold or wait for a GPU: those on GPU nodes, and those not yet on a node
+  const pods = await fetchGpuPods(store, nodes, () => findAll(store, 'cluster', TYPES.POD));
   const gpuMiB = Math.max(0, ...gpuModels(nodes).map((m) => m.memoryMiB));
   let index: QueueIndex;
   let nsQueue: Record<string, string>;
