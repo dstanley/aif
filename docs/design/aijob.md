@@ -48,6 +48,13 @@ AIWorkload with category `agent`; its governance stays with the platform
 that provides it. The `category` field is a separate, smaller independent
 change.
 
+The CRD accepts only these values; beyond that the category is
+informational. The operator does not change its behaviour by category, and
+nothing checks that a job labelled `training` trains. A client takes the
+category from the profile that starts the run rather than from the user,
+so it is as reliable as the profile: with profiles enforced at admission,
+it becomes a fact about the run rather than a claim.
+
 ### Identity
 
 - `metadata.name` is the job id. The UI generates it at submit as
@@ -262,8 +269,9 @@ Deleting an AIJob removes the history. A finalizer makes it safe:
 The UI presents these as two different actions: "Clean up execution
 resources", which the operator also does on its own at retention, and
 "Delete run record", which is subject to whatever history policy an
-installation sets. Nothing deletes run records automatically in this
-version.
+installation sets. The only automatic deletion of records is the history
+policy (see History at scale), which removes the oldest finished records
+and never one that is still running.
 
 ### Operator restart
 
@@ -279,9 +287,59 @@ status never guesses.
 |---|---|---|
 | Pods, Job or PyTorchJob, Workload, claims, ephemeral PVC, Helm release | 7 days after completion | operator, `spec.retention.executionObjects` |
 | Job `ttlSecondsAfterFinished` | 14 days | chart, as a backstop only |
-| AIJob | kept | installation policy, manual |
+| AIJob | 365 days, and at most 1,000 finished records per namespace | operator, the history policy in Settings |
 | Logs | 90 days | log backend retention |
 | Checkpoints and outputs on a named PVC | kept | storage policy, outside this API |
+
+## History at scale
+
+A cluster that runs tests on a schedule creates hundreds of AIJobs a week.
+Each record is small: the status keeps at most 16 pod entries, so an AIJob
+is a few kilobytes, and ten thousand of them are tens of megabytes in
+etcd. The cost is in reading the history, not in storing it.
+
+### History policy
+
+Settings holds a history policy for finished records:
+
+```yaml
+spec:
+  aijobHistory:
+    maxAge: 8760h          # after completion; 365 days
+    maxPerNamespace: 1000  # the newest finished records in each namespace
+```
+
+The operator deletes the oldest finished records beyond either limit,
+through the same finalizer as a manual delete. A record that has not
+finished, or whose execution has not been cleaned up yet, is never
+removed. The label `ai-factory.suse.com/keep: "true"` exempts a record.
+Setting a limit to `0` turns it off.
+
+### Lists
+
+- The UI and the SDK read AIJobs a page at a time, sorted and filtered by
+  the server: through Rancher's API, whose cache serves paged, sorted and
+  filtered lists, or with `limit` and `continue` on the Kubernetes API.
+  Neither loads the whole history.
+- The operator mirrors the fields a list filters on into labels:
+  `ai-factory.suse.com/phase`, `ai-factory.suse.com/category` and
+  `ai-factory.suse.com/profile`, so the filters run as label selectors on
+  the server.
+- The default view is the last 7 days in the namespaces the user can see,
+  newest first. Older runs are reached by a date filter or a search by name.
+- Pods, PVCs and logs are read for the run a person opens, not for the
+  list, which needs only the AIJobs.
+- Aggregates (success rate, queue wait, GPU hours) cover a time window,
+  not the whole history, and come from metrics once metrics are recorded.
+
+### Operator
+
+The operator caches every AIJob, as a controller does for the kind it
+reconciles, so its memory grows with the history by a few kilobytes per
+record. A record that has finished and whose execution is cleaned up needs
+no further work: its reconcile returns before any Helm or API call, so a
+resync or a restart costs one cache read per record, not one release
+lookup.
 
 ## What this enables, in order
 
@@ -296,12 +354,38 @@ status never guesses.
 4. Aggregates over AIJobs: success rate, queue wait percentiles,
    GPU hours.
 
+## Testing
+
+| Layer | What is checked | How |
+|---|---|---|
+| API | the CEL rules (immutable `source` and `values`, the name length), defaults, enums | envtest, against a real API server |
+| Controller | each phase transition, cancel, retention and cleanup, deletion through the finalizer, a restart with a partial status, a release the AIJob did not install, an install that fails | envtest, with a fake Helm client and execution objects created by the test |
+| Chart | the rendered Job or PyTorchJob, claims and PVCs for each GPU mode, the common labels, the checks that refuse bad values | `helm template` checks (`verify-render.sh`) |
+| Profiles | each default profile renders, and the chart's copy matches the examples | UI unit tests and a sync check |
+| UI and SDK | how a profile becomes an AIJob, the checks before submitting, how a status is shown | unit tests |
+| End to end | a single-GPU run, a distributed run, a CPU-only run, a queued run, cancel, cleanup at retention; on the management cluster and on an AI-enabled downstream cluster | a lab cluster; the test profiles' result cards (`AIF_RESULT`) are the pass or fail |
+
+### Scale test
+
+Setup: 5,000 finished AIJobs across 20 namespaces, created with a
+synthetic status through the status subresource and no execution, plus 50
+small CPU runs in progress.
+
+| What | Passes when |
+|---|---|
+| The Jobs page | the first page shows within 2 seconds with the default filter; browser memory does not grow with the history; paging, sorting and filters reach all 5,000 |
+| The SDK and CLI list | the first page returns within 2 seconds, and paging reaches all records |
+| The operator | memory grows linearly with the records; a restart makes no Helm lookup for cleaned-up records; the runs in progress keep their 10-second status updates |
+| The API server | no client lists every AIJob (from the API server's audit log) |
+| The history policy | with `maxPerNamespace: 100`, each namespace settles at 100 finished records; no record in progress or not yet cleaned up is removed |
+
+The same test at 20,000 records shows where the curve bends.
+
 ## Out of scope for the first version
 
 - Multi-cluster targets. AIWorkload reaches downstream clusters through
   Fleet. An AIJob runs in the cluster where it is created. Fleet
   delivery can be added later with the same record.
-- Automatic deletion of job records.
 - Artifacts. A later version records references to checkpoint PVCs or
   object storage; the first version keeps the named PVC in the values
   and nothing more.
