@@ -1,12 +1,15 @@
 <script lang="ts">
-// The files on a volume, one folder at a time, each with a download. Each folder opened is read by a
-// short-lived Job (see volumefiles.ts), so it takes a few seconds; a folder's files are sorted on the
-// volume and cut at MAX_ENTRIES, which the listing says, and a filter searches everything under it.
-// A file too big to download here gets the command that copies it instead.
+// The files on a volume, one folder at a time, each with a download. Opening the volume reads an index
+// of it in one short-lived Job (see volumefiles.ts): when every file fits, moving between folders,
+// sorting and searching then happen in the browser with no further Job. A larger volume is read one
+// folder at a time, its files sorted on the volume and cut at MAX_ENTRIES, which the listing says.
+// Every folder is in a jump list either way. A file too big to download here gets the command that
+// copies it instead.
 import { defineComponent, PropType } from 'vue';
 import type { CheckpointVolume } from '../checkpoints';
 import {
-  FolderListing, FolderSort, MAX_DOWNLOAD_BYTES, MAX_ENTRIES, VolumeFile, VolumeFolder, decodeFile, fileScript, folderScript, formatBytes, parseFolder, runVolumeJob
+  FolderListing, FolderSort, MAX_DOWNLOAD_BYTES, MAX_ENTRIES, VolumeFile, VolumeFolder, VolumeIndex, decodeFile, fileScript, folderScript, formatBytes,
+  indexScript, listFromIndex, parseFolder, parseIndex, runVolumeJob
 } from '../volumefiles';
 import { checkpointRun } from '../checkpoints';
 
@@ -20,6 +23,7 @@ export default defineComponent({
       error:     '',
       dir:       '',
       listing:   null as FolderListing | null,
+      index:     null as VolumeIndex | null, // the whole volume, read when it opens
       sort:      'name' as FolderSort,
       filter:    '',
       applied:   '', // the filter the listing shown was read with
@@ -51,10 +55,41 @@ export default defineComponent({
   },
 
   mounted() {
-    this.load();
+    this.refresh();
   },
 
   methods: {
+    /** Read the volume's index, then show the folder. */
+    async refresh() {
+      this.loading = true;
+      this.error = '';
+      try {
+        this.index = parseIndex(await runVolumeJob(this.$store, this.cluster, this.checkpoint.namespace, this.checkpoint.name, indexScript()));
+        if (this.dir && !this.index.dirs.includes(this.dir) && this.index.complete) {
+          this.dir = '';
+        }
+      } catch (e: any) {
+        this.error = this.explain(e);
+        this.loading = false;
+
+        return;
+      }
+      await this.show();
+    },
+
+    /** The folder shown: from the index when it holds everything (no Job), else read on its own. */
+    async show() {
+      if (this.index?.complete) {
+        this.listing = listFromIndex(this.index, this.dir, this.sort, this.filter);
+        this.applied = this.filter.trim();
+        this.fileError = '';
+        this.loading = false;
+
+        return;
+      }
+      await this.load();
+    },
+
     async load() {
       this.loading = true;
       this.error = '';
@@ -76,17 +111,17 @@ export default defineComponent({
     open(dir: string) {
       this.dir = dir;
       this.filter = '';
-      this.load();
+      this.show();
     },
 
     setSort(s: FolderSort) {
       this.sort = s;
-      this.load();
+      this.show();
     },
 
     clearFilter() {
       this.filter = '';
-      this.load();
+      this.show();
     },
 
     /** The file's path within the folder shown (a search shows paths under it). */
@@ -193,9 +228,27 @@ export default defineComponent({
           >{{ c.name }}</a>
         </template>
       </nav>
+      <select
+        v-if="index && index.dirs.length"
+        :value="dir"
+        aria-label="Jump to folder"
+        class="vf-jump"
+        @change="open($event.target.value)"
+      >
+        <option value="">
+          / (top of the volume)
+        </option>
+        <option
+          v-for="p in index.dirs"
+          :key="p"
+          :value="p"
+        >
+          {{ p }}/
+        </option>
+      </select>
       <form
         class="vf-filter"
-        @submit.prevent="load"
+        @submit.prevent="show"
       >
         <input
           v-model="filter"
@@ -220,13 +273,29 @@ export default defineComponent({
           Newest first
         </option>
       </select>
+      <button
+        v-clean-tooltip="'Read the volume again'"
+        class="btn role-tertiary btn-sm"
+        type="button"
+        aria-label="Refresh"
+        :disabled="loading"
+        @click="refresh"
+      >
+        <i class="icon icon-refresh" />
+      </button>
     </div>
+    <p
+      v-if="index && !index.complete && !loading"
+      class="text-muted vf-note"
+    >
+      This volume holds {{ index.totalFiles }} files, more than can be read at once: each folder is read when you open it.
+    </p>
 
     <div
       v-if="loading"
       class="text-muted"
     >
-      <i class="icon icon-spinner icon-spin" /> Reading {{ dir || checkpoint.name }}… (a short-lived pod mounts the volume read-only)
+      <i class="icon icon-spinner icon-spin" /> Reading {{ index ? (dir || checkpoint.name) : checkpoint.name }}… (a short-lived pod mounts the volume read-only)
     </div>
     <div
       v-else-if="error"
@@ -236,7 +305,7 @@ export default defineComponent({
       <button
         class="btn role-tertiary btn-sm"
         type="button"
-        @click="load"
+        @click="refresh"
       >
         Retry
       </button>
@@ -355,6 +424,7 @@ export default defineComponent({
 .vf-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
   select { width: auto; height: 28px; padding: 0 6px; font-size: 12px; }
   .vf-filter input { width: 220px; height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--border-radius); background: var(--input-bg); color: var(--body-text); font-size: 12px; } }
+.vf-jump { max-width: 320px; }
 .vf-crumbs { flex: 1; font-family: monospace; font-size: 12px; display: flex; gap: 4px; flex-wrap: wrap; word-break: break-all; }
 .vf-note { margin: 0 0 6px; }
 .vf-folder a { font-weight: 600; }

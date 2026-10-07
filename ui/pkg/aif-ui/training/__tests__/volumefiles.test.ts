@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  BEGIN, END, MAX_DOWNLOAD_BYTES, MAX_ENTRIES, NoFolderError, decodeFile, fileScript, folderScript, formatBytes, jobManifest, parseFolder, parseListing, runVolumeJob, safeDir, shellQuote
+  BEGIN, END, INDEX_FILES, MAX_DOWNLOAD_BYTES, MAX_ENTRIES, NoFolderError, decodeFile, fileScript, folderScript, formatBytes, indexScript, jobManifest, listFromIndex,
+  parseFolder, parseIndex, parseListing, runVolumeJob, safeDir, shellQuote
 } from '../volumefiles';
 
 describe('parseListing', () => {
@@ -144,5 +145,52 @@ describe('folders', () => {
 
   it('a folder that has gone says so', () => {
     expect(() => parseFolder('NODIR\n', 'gone')).toThrow(NoFolderError);
+  });
+});
+
+describe('the volume index', () => {
+  // as BusyBox printed it, in the Job's image, for a test volume (trimmed)
+  const LOG = 'INDEX\nFILES 5\nDIRS 4\nP|./hf\nP|./hf/hub\nP|./hf/hub/blobs\nP|./out dir\n' +
+    'F|3000|20|./hf/hub/blobs/aaa\nF|50|10|./hf/hub/blobs/bbb\nF|0|30|./hf/hub/a.lock\nF|3|5|./out dir/it\'s.json\nF|2|1|./top.txt\n';
+
+  it('reads every folder and file, and whether that is all of them', () => {
+    const ix = parseIndex(LOG);
+
+    expect(ix.dirs).toEqual(['hf', 'hf/hub', 'hf/hub/blobs', 'out dir']);
+    expect(ix.files).toHaveLength(5);
+    expect(ix.complete).toBe(true);
+    expect(parseIndex(LOG.replace('FILES 5', 'FILES 25000')).complete).toBe(false);
+    expect(parseIndex(LOG.replace('DIRS 4', 'DIRS 9000')).complete).toBe(false);
+  });
+
+  it('lists a folder from the index: its subfolders with totals, then its own files', () => {
+    const top = listFromIndex(parseIndex(LOG), '');
+
+    expect(top.folders.map((f) => [f.name, f.files, f.bytes])).toEqual([['hf', 3, 3050], ['out dir', 1, 3]]);
+    expect(top.files.map((f) => f.path)).toEqual(['top.txt']);
+    expect(listFromIndex(parseIndex(LOG), 'hf/hub', 'size').files.map((f) => f.path)).toEqual(['hf/hub/a.lock']);
+    expect(listFromIndex(parseIndex(LOG), 'hf/hub/blobs', 'size').files.map((f) => f.path)).toEqual(['hf/hub/blobs/aaa', 'hf/hub/blobs/bbb']);
+  });
+
+  it('searches file names under the folder, case-insensitively', () => {
+    const hits = listFromIndex(parseIndex(LOG), 'hf', 'name', 'AA');
+
+    expect(hits).toMatchObject({ search: true, totalFiles: 1 });
+    expect(hits.files.map((f) => f.path)).toEqual(['hf/hub/blobs/aaa']);
+  });
+
+  it('cuts a long folder at MAX_ENTRIES and keeps the count', () => {
+    const many = Array.from({ length: MAX_ENTRIES + 20 }, (_, i) => `F|${ i }|1|./f${ i }`).join('\n');
+    const l = listFromIndex(parseIndex(`FILES ${ MAX_ENTRIES + 20 }\nDIRS 0\n${ many }`), '');
+
+    expect(l.files).toHaveLength(MAX_ENTRIES);
+    expect(l.totalFiles).toBe(MAX_ENTRIES + 20);
+  });
+
+  it('the index script skips lost+found and caps what it prints', () => {
+    const s = indexScript();
+
+    expect(s).toContain('-path ./lost+found -prune -o -type f');
+    expect(s).toContain(`head -n ${ INDEX_FILES }`);
   });
 });

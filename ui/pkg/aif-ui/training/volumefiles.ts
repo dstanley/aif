@@ -88,6 +88,136 @@ export function folderScript(dir: string, opts: { sort?: FolderSort; filter?: st
     `find . -mindepth 1 -maxdepth 1 -type f ${ stat } | sort ${ sort } | head -n ${ MAX_ENTRIES }`;
 }
 
+// The whole volume in one Job: every folder (up to INDEX_DIRS) and every file (up to INDEX_FILES),
+// with the true counts. When everything fits, the browser lists, sorts and searches every folder
+// from it without another Job; when it does not, the folders still give the jump list, and a folder
+// is read on its own (folderScript) when opened.
+export const INDEX_FILES = 20000;
+export const INDEX_DIRS = 5000;
+
+export interface VolumeIndex {
+  dirs: string[]; // every folder, as a path from the volume's root, sorted
+  files: VolumeFile[];
+  totalFiles: number;
+  totalDirs: number;
+  complete: boolean; // every file and folder is in the index
+}
+
+export function indexScript(): string {
+  const prune = '-path ./lost+found -prune -o';
+
+  return 'cd /ckpt || exit 3; echo INDEX; ' +
+    `echo "FILES $(find . ${ prune } -type f -print | wc -l)"; ` +
+    `echo "DIRS $(find . ${ prune } -type d ! -path . -print | wc -l)"; ` +
+    `find . ${ prune } -type d ! -path . -print | head -n ${ INDEX_DIRS } | sed 's/^/P|/'; ` +
+    `find . ${ prune } -type f -exec stat -c 'F|%s|%Y|%n' {} + | head -n ${ INDEX_FILES }`;
+}
+
+export function parseIndex(log: string): VolumeIndex {
+  const dirs: string[] = [];
+  const files: VolumeFile[] = [];
+  let totalFiles = 0;
+  let totalDirs = 0;
+
+  for (const raw of (log || '').split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    let m = line.match(/^P\|\.\/(.+)$/);
+
+    if (m) {
+      dirs.push(m[1]);
+      continue;
+    }
+    m = line.match(/^F\|(\d+)\|(\d+)\|\.\/(.+)$/);
+    if (m) {
+      files.push({ path: m[3], size: Number(m[1]), modified: new Date(Number(m[2]) * 1000) });
+      continue;
+    }
+    m = line.match(/^(FILES|DIRS) (\d+)$/);
+    if (m) {
+      if (m[1] === 'FILES') {
+        totalFiles = Number(m[2]);
+      } else {
+        totalDirs = Number(m[2]);
+      }
+    }
+  }
+  totalFiles = Math.max(totalFiles, files.length);
+  totalDirs = Math.max(totalDirs, dirs.length);
+
+  return {
+    dirs: dirs.sort(), files, totalFiles, totalDirs, complete: files.length >= totalFiles && dirs.length >= totalDirs
+  };
+}
+
+const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
+const baseOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+
+function sortFiles(files: VolumeFile[], sort: FolderSort): VolumeFile[] {
+  const by = sort === 'size' ? (a: VolumeFile, b: VolumeFile) => b.size - a.size :
+    sort === 'modified' ? (a: VolumeFile, b: VolumeFile) => (b.modified?.getTime() || 0) - (a.modified?.getTime() || 0) :
+      (a: VolumeFile, b: VolumeFile) => a.path.localeCompare(b.path);
+
+  return [...files].sort(by);
+}
+
+const TOTALS = new WeakMap<VolumeIndex, Map<string, { files: number; bytes: number; newest: number }>>();
+
+/** Every folder's file count, size and newest file, in one pass over the files (each adds to its ancestors). */
+export function folderTotals(index: VolumeIndex): Map<string, { files: number; bytes: number; newest: number }> {
+  let out = TOTALS.get(index);
+
+  if (out) {
+    return out;
+  }
+  out = new Map();
+  for (const x of index.files) {
+    const t = x.modified?.getTime() || 0;
+
+    for (let p = parentOf(x.path); p; p = parentOf(p)) {
+      const e = out.get(p) || { files: 0, bytes: 0, newest: 0 };
+
+      e.files++;
+      e.bytes += x.size;
+      e.newest = Math.max(e.newest, t);
+      out.set(p, e);
+    }
+  }
+  TOTALS.set(index, out);
+
+  return out;
+}
+
+/** A folder's listing from a complete index: the same shape folderScript's listing has, with no Job. */
+export function listFromIndex(index: VolumeIndex, dir: string, sort: FolderSort = 'name', filter = ''): FolderListing {
+  const d = safeDir(dir);
+  const under = (p: string) => !d || p.startsWith(`${ d }/`);
+  const f = filter.trim().toLowerCase();
+
+  if (f) {
+    const hits = index.files.filter((x) => under(x.path) && baseOf(x.path).toLowerCase().includes(f));
+
+    return {
+      dir: d, folders: [], files: sortFiles(hits, sort).slice(0, MAX_ENTRIES), totalFiles: hits.length, search: true
+    };
+  }
+  const totals = folderTotals(index);
+  const folders: VolumeFolder[] = index.dirs.filter((p) => parentOf(p) === d).map((p) => {
+    const t = totals.get(p) || { files: 0, bytes: 0, newest: 0 };
+
+    return {
+      name: baseOf(p), files: t.files, bytes: t.bytes, modified: t.newest ? new Date(t.newest) : null
+    };
+  });
+  const own = index.files.filter((x) => parentOf(x.path) === d);
+  const byFolder = sort === 'size' ? (a: VolumeFolder, b: VolumeFolder) => b.bytes - a.bytes :
+    sort === 'modified' ? (a: VolumeFolder, b: VolumeFolder) => (b.modified?.getTime() || 0) - (a.modified?.getTime() || 0) :
+      (a: VolumeFolder, b: VolumeFolder) => a.name.localeCompare(b.name);
+
+  return {
+    dir: d, folders: folders.sort(byFolder), files: sortFiles(own, sort).slice(0, MAX_ENTRIES), totalFiles: own.length, search: false
+  };
+}
+
 export class NoFolderError extends Error {}
 
 export function parseFolder(log: string, dir: string, sort: FolderSort = 'name'): FolderListing {
