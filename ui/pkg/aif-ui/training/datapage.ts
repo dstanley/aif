@@ -4,6 +4,7 @@
 // (<run>-checkpoints, kept after the run) and a scratch volume per pod (<pod>-scratch, owned by the
 // pod, gone with it). "All volumes" drops that label filter, for volumes made some other way.
 import { PaginationArgs, PaginationParamFilter, PaginationSort } from '@shell/types/store/pagination.types';
+import { AIJOB_TYPE } from './aijob';
 import { TYPES } from './config';
 import { CheckpointVolume } from './checkpoints';
 import { JOB_ID_LABEL } from './jobspage';
@@ -98,6 +99,7 @@ export interface VolumeRow {
   // are gone, which for a run is when its execution is cleaned up (at its retention)
   heldBy: string[];
   deleting: boolean; // deleted, and waiting for the pods above to go
+  cleanupDue: string; // when the run's execution is cleaned up (its retention), '' when unknown
   ownerPod: string; // a scratch volume's pod, which deletes it when it goes
 }
 
@@ -143,6 +145,7 @@ export function volumeRows(pvcs: any[], pods: any[]): VolumeRow[] {
       inUseBy:      mounts[`${ ns }/${ name }`] || [],
       heldBy:       held[`${ ns }/${ name }`] || [],
       deleting:     !!v.metadata?.deletionTimestamp,
+      cleanupDue:   '',
       ownerPod:     (v.metadata?.ownerReferences || []).find((o: any) => o?.kind === 'Pod')?.name || '',
     };
   });
@@ -181,12 +184,19 @@ export async function fetchVolumesPage(store: any, q: VolumesQuery): Promise<Vol
   const podsBy = (field: string, values: string[]) => (values.length ? findPage(store, TYPES.POD, new PaginationArgs({
     page: 1, pageSize: 2000, filters: [PaginationParamFilter.createSingleField({ field, value: values.join(','), equality: IN }) as PaginationParamFilter]
   })).then((r) => r.data) : Promise.resolve([]));
-  const [runPods, nsPods] = await Promise.all([
+  const records = (runs.length ? findPage(store, AIJOB_TYPE, new PaginationArgs({
+    page: 1, pageSize: 2000, filters: [PaginationParamFilter.createSingleField({ field: 'metadata.name', value: runs.join(','), equality: IN }) as PaginationParamFilter]
+  })).then((r) => r.data) : Promise.resolve([])).catch(() => []);
+  const [runPods, nsPods, aiJobs] = await Promise.all([
     podsBy(`metadata.labels[${ JOB_ID_LABEL }]`, runs),
     podsBy('metadata.namespace', otherNamespaces),
+    records,
   ]);
+  const due = new Map((aiJobs as any[]).map((j) => [`${ j.metadata?.namespace }/${ j.metadata?.name }`, j.status?.cleanup?.dueAt || '']));
 
-  return { rows: volumeRows(pvcs, [...runPods, ...nsPods]), count };
+  return {
+    rows: volumeRows(pvcs, [...runPods, ...nsPods]).map((r) => ({ ...r, cleanupDue: due.get(`${ r.namespace }/${ r.run }`) || '' })), count
+  };
 }
 
 export interface StorageNode {
@@ -259,4 +269,26 @@ export async function cleanUpRun(store: any, clusterId: string, namespace: strin
     headers: { 'content-type': 'application/merge-patch+json' },
     data:    { spec: { retention: { executionObjects: '1m' } } },
   });
+}
+
+/** "in 5 days", "in 3 hours", "within the hour", "any minute": how long until `iso`. */
+export function until(iso: string, now = Date.now()): string {
+  const ms = new Date(iso).getTime() - now;
+
+  if (!iso || Number.isNaN(ms)) {
+    return '';
+  }
+  if (ms <= 60000) {
+    return 'any minute';
+  }
+  const h = Math.floor(ms / 3600000);
+
+  if (h < 1) {
+    return 'within the hour';
+  }
+  if (h < 48) {
+    return `in ${ h } hour${ h === 1 ? '' : 's' }`;
+  }
+
+  return `in ${ Math.floor(h / 24) } days`;
 }

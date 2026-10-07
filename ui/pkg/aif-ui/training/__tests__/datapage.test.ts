@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import stevePaginationUtils from '@shell/plugins/steve/steve-pagination-utils';
 import {
-  cleanUpRun, freeToDelete, longhornSummary, volumeKind, volumeRows, volumesPagination, VolumesQuery
+  cleanUpRun, freeToDelete, longhornSummary, until, volumeKind, volumeRows, volumesPagination, VolumesQuery
 } from '../datapage';
 import { fetchGpuPods, fetchJobCounts, gpuNodeNames } from '../jobspage';
 
@@ -170,5 +170,17 @@ describe('cleanUpRun', () => {
       headers: { 'content-type': 'application/merge-patch+json' },
       data:    { spec: { retention: { executionObjects: '1m' } } },
     });
+  });
+});
+
+describe('until', () => {
+  const now = Date.parse('2026-10-08T00:00:00Z');
+
+  it('says how long until a time, roughly', () => {
+    expect(until('2026-10-13T06:00:00Z', now)).toBe('in 5 days');
+    expect(until('2026-10-08T03:30:00Z', now)).toBe('in 3 hours');
+    expect(until('2026-10-08T00:20:00Z', now)).toBe('within the hour');
+    expect(until('2026-10-07T23:00:00Z', now)).toBe('any minute');
+    expect(until('', now)).toBe('');
   });
 });

@@ -10,7 +10,7 @@ import VolumeFiles from '../components/VolumeFiles.vue';
 import { ago } from '../runs';
 import { trainingLink } from '../section';
 import {
-  asCheckpoint, cleanUpRun, fetchStorageSummary, fetchVolumesPage, freeToDelete, StorageSummary, VolumeRow, VolumeScope, VolumeSortKey
+  asCheckpoint, cleanUpRun, fetchStorageSummary, fetchVolumesPage, freeToDelete, StorageSummary, until, VolumeRow, VolumeScope, VolumeSortKey
 } from '../datapage';
 
 const COLUMNS: { key: string; label: string; sort?: VolumeSortKey }[] = [
@@ -188,6 +188,16 @@ export default defineComponent({
     },
 
     freeToDelete,
+
+    dueText(r: VolumeRow): string {
+      return until(r.cleanupDue, this.now);
+    },
+
+    cleanUpHint(r: VolumeRow): string {
+      const when = r.cleanupDue ? until(r.cleanupDue, this.now) : 'at the end of its retention';
+
+      return `Removes ${ r.run }'s pods and logs now instead of ${ when }. Its scratch volume goes with them, and its checkpoints can then be deleted. The run's record and results stay.`;
+    },
 
     /** Clean up the run whose finished pods hold this volume; asks for a second click first. */
     async cleanUp(r: VolumeRow) {
@@ -425,9 +435,13 @@ export default defineComponent({
                 v-clean-tooltip="r.inUseBy.join(', ')"
               >In use by {{ r.inUseBy.length }} pod{{ r.inUseBy.length === 1 ? '' : 's' }}</span>
               <span
+                v-else-if="r.heldBy.length && r.run"
+                v-clean-tooltip="`The run's finished pod (${ r.heldBy.join(', ') }) is kept until the run is cleaned up, and the volume cannot be deleted before then`"
+              >Held until the run is cleaned up<template v-if="r.cleanupDue"> ({{ dueText(r) }})</template></span>
+              <span
                 v-else-if="r.heldBy.length"
-                v-clean-tooltip="`${ r.heldBy.join(', ') } finished but is kept until the run is cleaned up (its retention); the volume cannot be deleted before then`"
-              >Held by finished pod</span>
+                v-clean-tooltip="`${ r.heldBy.join(', ') } finished but still names the volume; it can be deleted once that pod is gone`"
+              >Held by finished pod {{ r.heldBy[0] }}</span>
               <span
                 v-else
                 class="text-muted"
@@ -447,6 +461,7 @@ export default defineComponent({
               </button>
               <button
                 v-if="!r.inUseBy.length && r.heldBy.length && r.run"
+                v-clean-tooltip="cleanUpHint(r)"
                 class="btn role-tertiary btn-sm"
                 @click="cleanUp(r)"
               >
