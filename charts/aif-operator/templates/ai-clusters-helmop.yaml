@@ -19,6 +19,10 @@ metadata:
     {{- include "aif-operator.labels" . | nindent 4 }}
 spec:
   defaultNamespace: {{ .Release.Namespace }}
+  {{- with .Values.aiClusters.agent.insecureSkipTLSVerify }}
+  # a registry with a self-signed certificate: Fleet's own pull of the agent chart
+  insecureSkipTLSVerify: {{ . }}
+  {{- end }}
   helm:
     # Fleet takes an OCI chart's full reference in repo, and its version apart
     repo: {{ .Values.aiClusters.agent.chart | quote }}
@@ -28,35 +32,22 @@ spec:
     takeOwnership: true
     # chart values carry Go templates of their own; Fleet's ${ } templating must leave them alone
     disablePreProcess: true
+    {{- $manager := dict "image" .Values.manager.image "args" (list "--leader-elect" "--controllers=aijob") "allowInsecureRegistryTLS" .Values.manager.allowInsecureRegistryTLS }}
+    {{- with .Values.manager.aijobAllowedCharts }}{{ $_ := set $manager "aijobAllowedCharts" . }}{{ end }}
+    {{- with .Values.manager.aijobDeniedValues }}{{ $_ := set $manager "aijobDeniedValues" . }}{{ end }}
+    {{- $values := dict "manager" $manager
+        "aiExtension" (dict "enabled" false)
+        "defaultBlueprints" (dict "enabled" false)
+        "rancherReadinessCheck" (dict "enabled" false)
+        "crds" (dict "manageWithJob" false)
+        "trainingChart" (deepCopy .Values.trainingChart)
+        "trainingProfiles" (dict "install" true) }}
+    {{- /* crds.manageWithJob false: Fleet's Helm installs crds/ on first install; the CRD Job needs
+         Rancher's kubectl image and hook RBAC the agent does not otherwise need.
+         aiClusters.agent.values is merged last: what differs on the downstream clusters, such as a
+         training chart repository the management cluster does not create for itself. */}}
     values:
-      manager:
-        image:
-          {{- toYaml .Values.manager.image | nindent 10 }}
-        args:
-          - --leader-elect
-          - --controllers=aijob
-        {{- with .Values.manager.aijobAllowedCharts }}
-        aijobAllowedCharts:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.manager.aijobDeniedValues }}
-        aijobDeniedValues:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-      aiExtension:
-        enabled: false
-      defaultBlueprints:
-        enabled: false
-      rancherReadinessCheck:
-        enabled: false
-      crds:
-        # Fleet's Helm installs crds/ on first install; the CRD Job needs Rancher's kubectl image
-        # and hook RBAC the agent does not otherwise need
-        manageWithJob: false
-      trainingChart:
-        {{- toYaml .Values.trainingChart | nindent 8 }}
-      trainingProfiles:
-        install: true
+      {{- toYaml (mergeOverwrite $values (deepCopy .Values.aiClusters.agent.values)) | nindent 6 }}
   targets:
     - clusterSelector:
         matchLabels:

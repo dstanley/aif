@@ -19,6 +19,12 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   url: {{ .url | quote }}
+  {{- with .insecureSkipTLSVerify }}
+  insecureSkipTLSVerify: {{ . }}
+  {{- end }}
+  {{- with .caBundle }}
+  caBundle: {{ . | quote }}
+  {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

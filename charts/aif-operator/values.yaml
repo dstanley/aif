@@ -296,12 +296,21 @@ aiClusters:
     chart: oci://ghcr.io/suse/chart/aif-operator
     # defaults to this chart's version
     version: ""
+    # true for a registry with a self-signed certificate (Fleet's pull of the agent chart)
+    insecureSkipTLSVerify: false
+    # values merged over the agent's, last: what differs on downstream clusters, for example
+    #   trainingChart: { clusterRepo: { create: true, url: oci://registry.example.com/training-charts, insecureSkipTLSVerify: true } }
+    values: {}
 
 trainingChart:
   clusterRepo:
     create: true
     name: gpu-train-charts
     url: oci://ghcr.io/suse/chart/gpu-train-job
+    # for a private registry: its CA (caBundle, base64 PEM), or insecureSkipTLSVerify (needs
+    # manager.allowInsecureRegistryTLS)
+    # caBundle: ""
+    # insecureSkipTLSVerify: false
 
 defaultBlueprints:
   enabled: true

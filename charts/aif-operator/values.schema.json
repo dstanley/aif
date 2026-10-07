@@ -408,7 +408,7 @@
     },
     "rancherReadinessCheck": { "type": "object", "properties": { "enabled": { "type": "boolean", "default": true } } },
     "trainingProfiles": { "type": "object", "properties": { "install": { "type": "boolean", "default": false } } },
-    "aiClusters": { "type": "object", "properties": { "enabled": { "type": "boolean", "default": false }, "agent": { "type": "object", "properties": { "chart": { "type": "string" }, "version": { "type": "string" } } } } },
+    "aiClusters": { "type": "object", "properties": { "enabled": { "type": "boolean", "default": false }, "agent": { "type": "object", "properties": { "chart": { "type": "string" }, "version": { "type": "string" }, "insecureSkipTLSVerify": { "type": "boolean", "default": false }, "values": { "type": "object", "additionalProperties": true } } } } },
     "crds": {
       "type": "object",
       "additionalProperties": false,
