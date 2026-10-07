@@ -1,6 +1,6 @@
 // The per-cluster AI Jobs section: in each cluster that serves the AIJob API, its own menu with
 // that cluster's overview, training catalog (whose cards an administrator edits: each is a compute
-// profile), jobs, and projects and quotas. Apps and blueprints are deployed centrally, from AI
+// profile), jobs, data (the volumes runs created), and projects and quotas. Apps and blueprints are deployed centrally, from AI
 // Factory's Apps, Blueprints and Workloads, to any cluster through Fleet. The
 // pages are the same components the global AI Factory section uses; they read the cluster from the
 // route, and links between them stay in this section (see section.ts).
@@ -20,6 +20,7 @@ export const clusterRoutes = [
   page(CLUSTER_PAGES.OVERVIEW, () => import('./pages/ClusterOverview.vue')),
   page(CLUSTER_PAGES.CATALOG, () => import('../pages/Catalog.vue')),
   page(CLUSTER_PAGES.JOBS, () => import('./pages/Workloads.vue')),
+  page(CLUSTER_PAGES.DATA, () => import('./pages/Data.vue')),
   page(CLUSTER_PAGES.PROJECTS, () => import('./pages/Projects.vue')),
   page(DEPLOY_PAGE, () => import('./pages/Deploy.vue')),
   page(SUBMIT_PAGE, () => import('./pages/Submit.vue')),
@@ -31,6 +32,7 @@ const NAV: { name: string; weight: number }[] = [
   { name: CLUSTER_PAGES.OVERVIEW, weight: 500 },
   { name: CLUSTER_PAGES.CATALOG, weight: 400 },
   { name: CLUSTER_PAGES.JOBS, weight: 300 },
+  { name: CLUSTER_PAGES.DATA, weight: 250 },
   { name: CLUSTER_PAGES.PROJECTS, weight: 200 },
 ];
 

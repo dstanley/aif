@@ -674,5 +674,6 @@ aitraining:
     overview: Overview
     catalog: Catalog
     jobs: Jobs
+    data: Data
     projects: Projects and Quotas
     profiles: Compute Profiles

@@ -14,6 +14,7 @@ export const CLUSTER_PAGES = {
   OVERVIEW: 'overview',
   CATALOG:  'catalog',
   JOBS:     'jobs',
+  DATA:     'data',
   PROJECTS: 'projects',
   PROFILES: 'profiles',
 } as const;
