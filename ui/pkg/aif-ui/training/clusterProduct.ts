@@ -1,4 +1,4 @@
-// The per-cluster AI Training section: in each cluster that serves the AIJob API, its own menu with
+// The per-cluster AI Jobs section: in each cluster that serves the AIJob API, its own menu with
 // that cluster's overview, training catalog (whose cards an administrator edits: each is a compute
 // profile), jobs, and projects and quotas. Apps and blueprints are deployed centrally, from AI
 // Factory's Apps, Blueprints and Workloads, to any cluster through Fleet. The

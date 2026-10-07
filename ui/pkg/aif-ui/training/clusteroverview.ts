@@ -1,4 +1,4 @@
-// A cluster's training runs as its AI Training overview lists them: from the AIJob records, which
+// A cluster's training runs as its AI Jobs overview lists them: from the AIJob records, which
 // outlive the Jobs and pods they describe, the active ones first, then the most recent.
 
 export interface JobRow {

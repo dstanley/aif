@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 // AI Factory's Clusters page: which clusters support AI, whether they are healthy, and how to open or
-// enable them. Everything a user runs is in each cluster's AI Training section; enabling AI on a
+// enable them. Everything a user runs is in each cluster's AI Jobs section; enabling AI on a
 // cluster has AI Factory install its training agent there through Fleet, and the status panel shows
 // that install step by step.
 import { computed, getCurrentInstance, onMounted, onUnmounted, ref } from 'vue';

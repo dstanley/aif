@@ -261,7 +261,7 @@ export default defineComponent({
       this.deployClusters = options;
     },
     /**
-     * Run on another cluster: that cluster's own Deploy page, in its AI Training section, for the
+     * Run on another cluster: that cluster's own Deploy page, in its AI Jobs section, for the
      * same profile. A full load, so every check reads the new cluster from a fresh store.
      */
     switchCluster(id: string) {

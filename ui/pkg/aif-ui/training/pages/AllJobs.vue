@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 // Jobs: the training and test runs on every cluster, in one list. Each run lives on its own cluster,
 // read here through Rancher's cluster proxy with the user's identity; its row links into that
-// cluster's AI Training section, where its pods, logs and results are. Persistent workloads
+// cluster's AI Jobs section, where its pods, logs and results are. Persistent workloads
 // (inference endpoints, applications) are on the Workloads page instead.
 import { computed, getCurrentInstance, onMounted, onUnmounted, ref } from 'vue';
 import { BadgeState } from '@components/BadgeState';

@@ -1,5 +1,5 @@
 // The training pages render in two sections. The global AI Factory section lives on Rancher's
-// local cluster; the per-cluster AI Training section sits inside each cluster that serves the
+// local cluster; the per-cluster AI Jobs section sits inside each cluster that serves the
 // AIJob API, where the GPUs, namespaces and runs are. A link from one training page to another
 // stays in the section the user is in: Deploy from a cluster's Catalog goes to that cluster's
 // Deploy, and a submitted run lands on that cluster's Jobs.

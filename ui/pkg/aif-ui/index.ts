@@ -17,7 +17,7 @@ export default function(plugin: IPlugin): void {
   // Add routes explicitly
   plugin.addRoutes(routes);
 
-  // The per-cluster AI Training section, in each cluster that serves the AIJob API
+  // The per-cluster AI Jobs section, in each cluster that serves the AIJob API
   plugin.addProduct(clusterProductModule as any);
   plugin.addRoutes(clusterRoutes);
 }

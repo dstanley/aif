@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-// A cluster's AI Training overview: what runs on this cluster's GPUs. Its capacity (GPUs and GPU
+// A cluster's AI Jobs overview: what runs on this cluster's GPUs. Its capacity (GPUs and GPU
 // memory, allocated and free), its projects and their entitlements, and its training runs, the
 // active ones first. Everything is read from this cluster, with the user's own RBAC.
 import { computed, getCurrentInstance, onMounted, onUnmounted, ref } from 'vue';

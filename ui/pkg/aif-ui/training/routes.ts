@@ -17,7 +17,7 @@ export const trainingRoutes = [
     redirect: (to: any) => ({ name: `c-cluster-${ PRODUCT_NAME }-settings`, params: to.params, query: { tab: 'projects' } }),
     meta:     { product: PRODUCT_NAME },
   },
-  // Profiles are created and edited from each cluster's AI Training > Catalog, by those allowed to
+  // Profiles are created and edited from each cluster's AI Jobs > Catalog, by those allowed to
   {
     name:     `c-cluster-${ PRODUCT_NAME }-${ PROFILES_PAGE }`,
     path:     `/c/:cluster/${ PRODUCT_NAME }/${ PROFILES_PAGE }`,

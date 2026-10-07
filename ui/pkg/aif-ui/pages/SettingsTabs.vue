@@ -10,7 +10,7 @@ import { CATALOG_SHOW_WRAPPED, getPref, setPref } from '../training/prefs';
 
 const vm = getCurrentInstance()!.proxy as any;
 // Rancher's t() HTML-escapes and Vue escapes again, so labels are read raw: & would show as &amp;
-// Projects & Quotas and Compute Profiles are per cluster: each cluster's AI Training section has them.
+// Projects & Quotas and Compute Profiles are per cluster: each cluster's AI Jobs section has them.
 const TABS = [
   { key: '', labelKey: 'suseai.pages.settings.tabs.general' },
   { key: 'blueprints', labelKey: 'suseai.pages.settings.tabs.blueprints' },

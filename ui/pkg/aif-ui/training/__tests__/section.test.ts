@@ -5,7 +5,7 @@ const globalRoute = { params: { cluster: 'local' }, meta: { product: 'suseai' } 
 const clusterRoute = { params: { cluster: 'c-m-altra' }, meta: { product: CLUSTER_PRODUCT } };
 
 describe('trainingLink', () => {
-  it('stays in a cluster\'s AI Training section, on that cluster', () => {
+  it('stays in a cluster\'s AI Jobs section, on that cluster', () => {
     expect(inClusterSection(clusterRoute)).toBe(true);
     expect(trainingLink(clusterRoute, 'jobs')).toEqual({ name: 'c-cluster-aitraining-jobs', params: { cluster: 'c-m-altra' }, query: {} });
     expect(trainingLink(clusterRoute, 'deploy', { profile: 'gpu-smoke' })).toEqual({

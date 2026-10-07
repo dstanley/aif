@@ -197,7 +197,7 @@ function workloadVersion(w: AIWorkload): string {
   return w.spec.source.blueprint?.version || '—';
 }
 
-// The inference profile an endpoint was deployed from (AI Training's Deploy labels the workload with it).
+// The inference profile an endpoint was deployed from (AI Jobs' Deploy labels the workload with it).
 const PROFILE_LABEL = 'trainingjobs/profile';
 function workloadProfile(w: AIWorkload): string {
   return (w.metadata as any)?.labels?.[PROFILE_LABEL] || '';

@@ -35,7 +35,7 @@ const clusters   = ref<ClusterInfo[]>([]);
 const repositories = ref<ManagedRepo[]>([]);
 const repositoryError = ref('');
 // Training runs (AIJobs) on the local cluster. GPU capacity and projects are per cluster: each
-// cluster's AI Training section shows them.
+// cluster's AI Jobs section shows them.
 const aiJobs     = ref<any[]>([]);
 const deployOpen = ref(false);
 const FINISHED   = ['Succeeded', 'Failed', 'Cancelled'];

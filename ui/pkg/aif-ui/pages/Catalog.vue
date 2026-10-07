@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 // The Catalog: everything a user can deploy. Training and inference profiles (governed, into a
 // project on this cluster), blueprints (to this or other clusters through Fleet) and apps from the
-// app catalog. Each card's Deploy opens the flow that kind already has. In a cluster's AI Training
+// app catalog. Each card's Deploy opens the flow that kind already has. In a cluster's AI Jobs
 // section it is that cluster's training catalog: its training and test profiles, run there. Each card
 // is a compute profile, which an administrator edits from the card's menu. Apps and blueprints are
 // deployed centrally, from AI Factory's Apps and Blueprints.
@@ -61,7 +61,7 @@ const apps = ref<CatalogApp[]>([]);
 const selectedVersions = reactive<Record<string, string>>({});
 const filter = ref({ text: '', status: '' as '' | 'ready' | 'beta' });
 
-// a cluster's AI Training section: its training catalog, no tabs
+// a cluster's AI Jobs section: its training catalog, no tabs
 const clusterSection = inClusterSection(vm.$route);
 // whether this user may write the cluster's profiles (ConfigMaps in ai-profiles), for Edit and New
 const canEditProfiles = ref(false);

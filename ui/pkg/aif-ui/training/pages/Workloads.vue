@@ -108,7 +108,7 @@ export default defineComponent({
         return this.fixedTab as 'training' | 'inference';
       }
       if (this.clusterSection) {
-        return 'training'; // a cluster's AI Training section lists its training runs
+        return 'training'; // a cluster's AI Jobs section lists its training runs
       }
       const t = this.$route.query.tab;
 
