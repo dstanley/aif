@@ -51,6 +51,7 @@ type fakeHelm struct {
 	releases  map[string]*helmClient.ReleaseInfo
 	ensured   []helmClient.ReleaseSpec
 	deleted   []string
+	lookups   int
 	ensureErr error
 	// onEnsure runs on every EnsureRelease, before ensureErr is returned: what Helm leaves behind.
 	onEnsure func(helmClient.ReleaseSpec)
@@ -83,6 +84,7 @@ func (f *fakeHelm) DeleteRelease(_ context.Context, name string) error {
 func (f *fakeHelm) LastRelease(_ context.Context, name string) (*helmClient.ReleaseInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lookups++
 	return f.releases[name], nil
 }
 
@@ -268,6 +270,43 @@ func TestRunsToSuccessThenCleansUpAtRetention(t *testing.T) {
 
 	h.reconcile("train-1")
 	assert.Len(t, h.helm.ensured, 1, "a cleaned job is not reinstalled")
+}
+
+func TestACleanedUpRecordCostsNoHelmLookup(t *testing.T) {
+	h := newHarness(t, aijob("done-1", func(j *v1alpha1.AIJob) {
+		now := metav1.NewTime(t0)
+		j.Status.Phase = v1alpha1.AIJobPhaseSucceeded
+		j.Status.CompletedAt = &now
+		j.Status.Cleanup.CompletedAt = &now
+	}))
+	h.reconcile("done-1")
+	assert.Zero(t, h.helm.lookups, "a finished, cleaned-up record is final: a resync or restart reads no release")
+	assert.Empty(t, h.helm.ensured)
+}
+
+func TestLabelsMirrorPhaseCategoryAndProfile(t *testing.T) {
+	h := newHarness(t, aijob("lab-1", func(j *v1alpha1.AIJob) { j.Spec.Profile = "shared-gpu-dev" }))
+	h.reconcile("lab-1")
+	j := h.get("lab-1")
+	assert.Equal(t, string(j.Status.Phase), j.Labels[v1alpha1.AIJobPhaseLabel])
+	assert.Equal(t, "training", j.Labels[v1alpha1.AIJobCategoryLabel])
+	assert.Equal(t, "shared-gpu-dev", j.Labels[v1alpha1.AIJobProfileLabel])
+
+	// A cleared category removes its label; a profile name no label can hold leaves none.
+	j.Spec.Category = ""
+	j.Spec.Profile = strings.Repeat("p", 70)
+	require.NoError(t, h.c.Update(context.Background(), j))
+	h.reconcile("lab-1")
+	j = h.get("lab-1")
+	assert.NotContains(t, j.Labels, v1alpha1.AIJobCategoryLabel)
+	assert.NotContains(t, j.Labels, v1alpha1.AIJobProfileLabel)
+	assert.Equal(t, string(j.Status.Phase), j.Labels[v1alpha1.AIJobPhaseLabel])
+
+	// The phase label follows the phase to the end.
+	j.Spec.Cancel = true
+	require.NoError(t, h.c.Update(context.Background(), j))
+	h.reconcile("lab-1")
+	assert.Equal(t, "Cancelled", h.get("lab-1").Labels[v1alpha1.AIJobPhaseLabel])
 }
 
 func TestShorterRetentionCleansSooner(t *testing.T) {

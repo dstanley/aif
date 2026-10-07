@@ -42,6 +42,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl "sigs.k8s.io/controller-runtime/pkg/client"
@@ -202,7 +204,49 @@ func (r *AIJobReconciler) Reconcile(ctx context.Context, req reconcile.Request) 
 			return reconcile.Result{}, err
 		}
 	}
+	if err := r.syncLabels(ctx, job); err != nil {
+		return reconcile.Result{}, err
+	}
 	return result, rerr
+}
+
+// filterLabels are the labels the operator keeps equal to the AIJob's phase,
+// category and profile; an empty or unrepresentable value removes the label.
+func filterLabels(job *v1alpha1.AIJob) map[string]string {
+	out := map[string]string{
+		v1alpha1.AIJobPhaseLabel:    string(job.Status.Phase),
+		v1alpha1.AIJobCategoryLabel: string(job.Spec.Category),
+		v1alpha1.AIJobProfileLabel:  job.Spec.Profile,
+	}
+	for k, v := range out {
+		if len(validation.IsValidLabelValue(v)) > 0 {
+			out[k] = ""
+		}
+	}
+	return out
+}
+
+// syncLabels mirrors the phase, category and profile into labels, with a merge
+// patch of only those keys, and only when one differs.
+func (r *AIJobReconciler) syncLabels(ctx context.Context, job *v1alpha1.AIJob) error {
+	patch := map[string]any{}
+	for k, v := range filterLabels(job) {
+		cur, has := job.Labels[k]
+		switch {
+		case v == "" && has:
+			patch[k] = nil
+		case v != "" && cur != v:
+			patch[k] = v
+		}
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(map[string]any{"metadata": map[string]any{"labels": patch}})
+	if err != nil {
+		return err
+	}
+	return ctrl.IgnoreNotFound(r.Patch(ctx, job, ctrl.RawPatch(types.MergePatchType, data)))
 }
 
 func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob, helm helmClient.HelmClient) (reconcile.Result, error) {
@@ -216,6 +260,12 @@ func (r *AIJobReconciler) reconcileJob(ctx context.Context, job *v1alpha1.AIJob,
 		st.Phase = v1alpha1.AIJobPhasePending
 	}
 	st.Execution.Release = job.Name
+
+	// Finished and cleaned up: the record is final and nothing it ran is left, so
+	// a resync or an operator restart costs no Helm lookup for it.
+	if st.Phase.IsTerminal() && st.Cleanup.CompletedAt != nil {
+		return reconcile.Result{}, nil
+	}
 
 	release, err := helm.LastRelease(ctx, job.Name)
 	if err != nil {

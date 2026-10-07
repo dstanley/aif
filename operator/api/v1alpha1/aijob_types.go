@@ -26,6 +26,15 @@ import (
 // keyed by it after the objects are gone.
 const AIJobJobIDLabel = "ai-factory.suse.com/job-id"
 
+// The operator mirrors an AIJob's phase, category and profile into these labels
+// on the AIJob, so lists can filter on them server side (label selectors, and
+// Rancher's paged API) without reading every record.
+const (
+	AIJobPhaseLabel    = "ai-factory.suse.com/phase"
+	AIJobCategoryLabel = "ai-factory.suse.com/category"
+	AIJobProfileLabel  = "ai-factory.suse.com/profile"
+)
+
 // AIJobPhase is where a finite execution is in its life. Succeeded, Failed and
 // Cancelled are terminal and never change afterwards.
 // +kubebuilder:validation:Enum=Pending;Queued;Admitted;Running;Succeeded;Failed;Cancelled
