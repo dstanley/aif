@@ -14,6 +14,9 @@ export interface CheckpointVolume {
   storageClass: string;
   created: string;
   inUseBy: string[]; // pods that mount it
+  // finished pods that still name it: Kubernetes keeps the volume (pvc-protection) until they go,
+  // which is when the run's execution is cleaned up
+  heldBy?: string[];
   runActive: boolean;
 }
 
@@ -28,16 +31,16 @@ export function checkpointRun(pvc: any): string {
 
 export function checkpointVolumes(pvcs: any[], pods: any[], jobs: any[]): CheckpointVolume[] {
   const mounts: Record<string, string[]> = {};
+  const held: Record<string, string[]> = {};
 
   for (const p of pods || []) {
-    if (['Succeeded', 'Failed'].includes(p?.status?.phase)) {
-      continue;
-    }
+    const into = ['Succeeded', 'Failed'].includes(p?.status?.phase) ? held : mounts;
+
     for (const v of p?.spec?.volumes || []) {
       const c = v?.persistentVolumeClaim?.claimName;
 
       if (c) {
-        (mounts[`${ p.metadata.namespace }/${ c }`] = mounts[`${ p.metadata.namespace }/${ c }`] || []).push(p.metadata.name);
+        (into[`${ p.metadata.namespace }/${ c }`] = into[`${ p.metadata.namespace }/${ c }`] || []).push(p.metadata.name);
       }
     }
   }
@@ -60,6 +63,7 @@ export function checkpointVolumes(pvcs: any[], pods: any[], jobs: any[]): Checkp
       storageClass: v.spec?.storageClassName || '',
       created:      String(v.metadata.creationTimestamp || '').replace('T', ' ').replace('Z', ''),
       inUseBy:      mounts[`${ ns }/${ v.metadata.name }`] || [],
+      heldBy:       held[`${ ns }/${ v.metadata.name }`] || [],
       runActive:    active.has(`${ ns }/${ run }`),
     }];
   });

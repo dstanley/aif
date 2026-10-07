@@ -248,8 +248,8 @@ export default defineComponent({
         </button>
         <button
           class="btn role-tertiary btn-sm"
-          :disabled="checkpoint.runActive || checkpoint.inUseBy.length > 0"
-          :title="checkpoint.runActive ? 'The run is still active' : checkpoint.inUseBy.length ? `In use by ${ checkpoint.inUseBy.join(', ') }` : 'Delete the volume and its data'"
+          :disabled="checkpoint.runActive || checkpoint.inUseBy.length > 0 || !!checkpoint.heldBy?.length"
+          :title="checkpoint.runActive ? 'The run is still active' : checkpoint.inUseBy.length ? `In use by ${ checkpoint.inUseBy.join(', ') }` : checkpoint.heldBy?.length ? `Kept until the run is cleaned up: ${ checkpoint.heldBy.join(', ') } finished but still names it` : 'Delete the volume and its data'"
           @click="$emit('remove-checkpoint', checkpoint)"
         >
           <i class="icon icon-delete" /> Delete volume

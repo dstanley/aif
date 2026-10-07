@@ -1,7 +1,8 @@
 <script lang="ts">
 // A cluster's Data: the volumes AI runs created on it, a page at a time (datapage.ts), with what
-// mounts each and how much room storage has left. A volume no pod uses can be browsed, its files
-// copied off, and deleted, one at a time or several together, through Rancher's own confirmation.
+// mounts each and how much room storage has left. A volume no pod names can be deleted, one at a
+// time or several together, through Rancher's own confirmation. One a finished pod still names is
+// held by Kubernetes until that pod goes: its run's execution is cleaned up, now if asked.
 import { defineComponent } from 'vue';
 import Banner from '@components/Banner/Banner.vue';
 import Loading from '@shell/components/Loading.vue';
@@ -9,7 +10,7 @@ import VolumeFiles from '../components/VolumeFiles.vue';
 import { ago } from '../runs';
 import { trainingLink } from '../section';
 import {
-  asCheckpoint, fetchStorageSummary, fetchVolumesPage, StorageSummary, VolumeRow, VolumeScope, VolumeSortKey
+  asCheckpoint, cleanUpRun, fetchStorageSummary, fetchVolumesPage, freeToDelete, StorageSummary, VolumeRow, VolumeScope, VolumeSortKey
 } from '../datapage';
 
 const COLUMNS: { key: string; label: string; sort?: VolumeSortKey }[] = [
@@ -19,7 +20,7 @@ const COLUMNS: { key: string; label: string; sort?: VolumeSortKey }[] = [
   { key: 'kind', label: 'Kind' },
   { key: 'size', label: 'Size' },
   { key: 'class', label: 'Storage class' },
-  { key: 'use', label: 'In use by' },
+  { key: 'use', label: 'Status' },
   { key: 'created', label: 'Created', sort: 'created' },
 ];
 
@@ -43,6 +44,8 @@ export default defineComponent({
       pageSize:  25,
       selected:  {} as Record<string, boolean>,
       browsing:  '' as string,
+      confirmCleanUp: '' as string, // the row whose Clean up run waits for a second click
+      notice:    '',
       error:     '',
       loading:   false,
       loadSeq:   0,
@@ -83,12 +86,12 @@ export default defineComponent({
     to(): number {
       return Math.min(this.total, this.from + this.rows.length - 1);
     },
-    /** Selected volumes that can go: no pod still uses them. */
+    /** Selected volumes that can go: no pod, running or finished, still names them. */
     deletable(): VolumeRow[] {
-      return this.rows.filter((r: VolumeRow) => this.selected[r.key] && !r.inUseBy.length);
+      return this.rows.filter((r: VolumeRow) => this.selected[r.key] && freeToDelete(r));
     },
     allSelected(): boolean {
-      const free = this.rows.filter((r: VolumeRow) => !r.inUseBy.length);
+      const free = this.rows.filter(freeToDelete);
 
       return !!free.length && free.every((r: VolumeRow) => this.selected[r.key]);
     },
@@ -181,7 +184,26 @@ export default defineComponent({
     toggleAll() {
       const on = !this.allSelected;
 
-      this.selected = Object.fromEntries(this.rows.filter((r: VolumeRow) => !r.inUseBy.length).map((r: VolumeRow) => [r.key, on]));
+      this.selected = Object.fromEntries(this.rows.filter(freeToDelete).map((r: VolumeRow) => [r.key, on]));
+    },
+
+    freeToDelete,
+
+    /** Clean up the run whose finished pods hold this volume; asks for a second click first. */
+    async cleanUp(r: VolumeRow) {
+      if (this.confirmCleanUp !== r.key) {
+        this.confirmCleanUp = r.key;
+
+        return;
+      }
+      this.confirmCleanUp = '';
+      try {
+        await cleanUpRun(this.$store, String(this.$route.params.cluster), r.namespace, r.run);
+        this.notice = `Cleaning up ${ r.run }: its pods go within a minute, and the volumes they held can then be deleted. Its record and results stay.`;
+        setTimeout(() => this.load(), 5000);
+      } catch (e: any) {
+        this.error = `Could not clean up ${ r.run }: ${ e?.message || e?.data?.message || e }`;
+      }
     },
 
     kindLabel(k: string): string {
@@ -251,6 +273,13 @@ export default defineComponent({
       v-if="error"
       color="error"
       :label="error"
+    />
+    <Banner
+      v-if="notice"
+      color="info"
+      :label="notice"
+      :closable="true"
+      @close="notice = ''"
     />
 
     <div
@@ -362,7 +391,7 @@ export default defineComponent({
               <input
                 v-model="selected[r.key]"
                 type="checkbox"
-                :disabled="!!r.inUseBy.length"
+                :disabled="!freeToDelete(r)"
                 :aria-label="`Select ${ r.name }`"
               >
             </td>
@@ -387,9 +416,18 @@ export default defineComponent({
             <td>{{ r.storageClass || '—' }}</td>
             <td>
               <span
-                v-if="r.inUseBy.length"
+                v-if="r.deleting"
+                v-clean-tooltip="r.heldBy.length || r.inUseBy.length ? `Waiting for ${ [...r.inUseBy, ...r.heldBy].join(', ') } to go` : 'Being deleted'"
+                class="td-deleting"
+              ><i class="icon icon-spinner icon-spin" /> Deleting</span>
+              <span
+                v-else-if="r.inUseBy.length"
                 v-clean-tooltip="r.inUseBy.join(', ')"
-              >{{ r.inUseBy.length }} pod{{ r.inUseBy.length === 1 ? '' : 's' }}</span>
+              >In use by {{ r.inUseBy.length }} pod{{ r.inUseBy.length === 1 ? '' : 's' }}</span>
+              <span
+                v-else-if="r.heldBy.length"
+                v-clean-tooltip="`${ r.heldBy.join(', ') } finished but is kept until the run is cleaned up (its retention); the volume cannot be deleted before then`"
+              >Held by finished pod</span>
               <span
                 v-else
                 class="text-muted"
@@ -408,7 +446,14 @@ export default defineComponent({
                 <i class="icon icon-folder" /> {{ browsing === r.key ? 'Hide files' : 'Browse files' }}
               </button>
               <button
-                v-if="!r.inUseBy.length"
+                v-if="!r.inUseBy.length && r.heldBy.length && r.run"
+                class="btn role-tertiary btn-sm"
+                @click="cleanUp(r)"
+              >
+                {{ confirmCleanUp === r.key ? 'Remove its pods and logs now?' : 'Clean up run' }}
+              </button>
+              <button
+                v-if="freeToDelete(r)"
                 class="btn role-tertiary btn-sm text-error"
                 :aria-label="`Delete ${ r.name }`"
                 @click="remove([r])"
@@ -485,6 +530,7 @@ export default defineComponent({
   th { font-weight: 600; font-size: 13px; white-space: nowrap; } }
 .td-check { width: 32px; }
 .td-name { font-weight: 600; }
+.td-deleting { color: var(--muted); }
 .td-right { text-align: right; white-space: nowrap; }
 .td-sortable { cursor: pointer; user-select: none; &.sorted { color: var(--primary); } .icon { font-size: 10px; } }
 .td-pager { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; flex-wrap: wrap; gap: 10px; }

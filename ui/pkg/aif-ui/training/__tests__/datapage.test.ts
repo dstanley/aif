@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import stevePaginationUtils from '@shell/plugins/steve/steve-pagination-utils';
 import {
-  longhornSummary, volumeKind, volumeRows, volumesPagination, VolumesQuery
+  cleanUpRun, freeToDelete, longhornSummary, volumeKind, volumeRows, volumesPagination, VolumesQuery
 } from '../datapage';
 import { fetchGpuPods, fetchJobCounts, gpuNodeNames } from '../jobspage';
 
@@ -70,10 +70,24 @@ describe('volumeRows', () => {
     expect(rows[1].ownerPod).toBe('dev-a-0-xk2');
   });
 
-  it('a finished pod no longer holds its volume', () => {
+  it('a finished pod no longer uses its volume, but holds it until the run is cleaned up', () => {
     const done = { ...running('dev-a-0', [{ name: 'c', persistentVolumeClaim: { claimName: 'dev-a-checkpoints' } }]), status: { phase: 'Succeeded' } };
+    const [r] = volumeRows([pvc('dev-a-checkpoints', RUN)], [done]);
 
-    expect(volumeRows([pvc('dev-a-checkpoints', RUN)], [done])[0].inUseBy).toEqual([]);
+    expect(r.inUseBy).toEqual([]);
+    expect(r.heldBy).toEqual(['dev-a-0']);
+    expect(freeToDelete(r)).toBe(false);
+  });
+
+  it('only a volume no pod names, and not already being deleted, is free to delete', () => {
+    const deleting = pvc('dev-b-checkpoints', RUN);
+
+    (deleting.metadata as any).deletionTimestamp = '2026-10-07T22:57:48Z';
+    const [free, gone] = volumeRows([pvc('dev-a-checkpoints', RUN), deleting], []);
+
+    expect(freeToDelete(free)).toBe(true);
+    expect(gone.deleting).toBe(true);
+    expect(freeToDelete(gone)).toBe(false);
   });
 });
 
@@ -142,5 +156,19 @@ describe('the Overview reads only what it shows', () => {
 
   it('job counts: null when the server cannot count, so the page counts the list', async() => {
     expect(await fetchJobCounts({ dispatch: vi.fn(async() => Promise.reject(new Error('no cache'))) })).toBeNull();
+  });
+});
+
+describe('cleanUpRun', () => {
+  it('shortens the run\'s retention with a merge patch, so the operator removes its pods now', async() => {
+    const dispatch = vi.fn(async() => ({}));
+
+    await cleanUpRun({ dispatch }, 'local', 'aif-submit', 'dev-a');
+    expect(dispatch).toHaveBeenCalledWith('cluster/request', {
+      url:     '/k8s/clusters/local/apis/ai-factory.suse.com/v1alpha1/namespaces/aif-submit/aijobs/dev-a',
+      method:  'PATCH',
+      headers: { 'content-type': 'application/merge-patch+json' },
+      data:    { spec: { retention: { executionObjects: '1m' } } },
+    });
   });
 });

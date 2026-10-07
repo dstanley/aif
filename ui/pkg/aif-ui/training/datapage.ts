@@ -94,17 +94,26 @@ export interface VolumeRow {
   storageClass: string;
   created: string;
   inUseBy: string[]; // pods not yet finished that mount it
+  // finished pods that still name it: Kubernetes keeps the volume (pvc-protection) until those pods
+  // are gone, which for a run is when its execution is cleaned up (at its retention)
+  heldBy: string[];
+  deleting: boolean; // deleted, and waiting for the pods above to go
   ownerPod: string; // a scratch volume's pod, which deletes it when it goes
 }
 
-/** The page's rows, with the pods (not yet finished) that mount each volume. */
+/** Whether the volume can be deleted now: no pod, running or finished, still names it. */
+export function freeToDelete(r: VolumeRow): boolean {
+  return !r.inUseBy.length && !r.heldBy.length && !r.deleting;
+}
+
+/** The page's rows, with the pods that mount each volume and the finished ones that still hold it. */
 export function volumeRows(pvcs: any[], pods: any[]): VolumeRow[] {
   const mounts: Record<string, string[]> = {};
+  const held: Record<string, string[]> = {};
 
   for (const p of pods || []) {
-    if (['Succeeded', 'Failed'].includes(p?.status?.phase)) {
-      continue;
-    }
+    const into = ['Succeeded', 'Failed'].includes(p?.status?.phase) ? held : mounts;
+
     for (const v of p?.spec?.volumes || []) {
       // a generic ephemeral volume's claim is <pod>-<volume>
       const claim = v?.persistentVolumeClaim?.claimName || (v?.ephemeral ? `${ p.metadata?.name }-${ v.name }` : '');
@@ -112,7 +121,7 @@ export function volumeRows(pvcs: any[], pods: any[]): VolumeRow[] {
       if (claim) {
         const k = `${ p.metadata?.namespace }/${ claim }`;
 
-        (mounts[k] = mounts[k] || []).push(p.metadata?.name);
+        (into[k] = into[k] || []).push(p.metadata?.name);
       }
     }
   }
@@ -132,6 +141,8 @@ export function volumeRows(pvcs: any[], pods: any[]): VolumeRow[] {
       storageClass: v.spec?.storageClassName || '',
       created:      v.metadata?.creationTimestamp || '',
       inUseBy:      mounts[`${ ns }/${ name }`] || [],
+      heldBy:       held[`${ ns }/${ name }`] || [],
+      deleting:     !!v.metadata?.deletionTimestamp,
       ownerPod:     (v.metadata?.ownerReferences || []).find((o: any) => o?.kind === 'Pod')?.name || '',
     };
   });
@@ -140,7 +151,7 @@ export function volumeRows(pvcs: any[], pods: any[]): VolumeRow[] {
 /** The row as the file browser (VolumeFiles) takes a volume. */
 export function asCheckpoint(r: VolumeRow): CheckpointVolume {
   return {
-    obj: r.obj, name: r.name, namespace: r.namespace, run: r.run, size: r.size, storageClass: r.storageClass, created: r.created, inUseBy: r.inUseBy, runActive: false
+    obj: r.obj, name: r.name, namespace: r.namespace, run: r.run, size: r.size, storageClass: r.storageClass, created: r.created, inUseBy: r.inUseBy, heldBy: r.heldBy, runActive: false
   };
 }
 
@@ -234,4 +245,18 @@ export async function fetchStorageSummary(store: any): Promise<StorageSummary | 
   } catch (e) {
     return null;
   }
+}
+
+/**
+ * Clean up a run's execution now rather than at its retention: the operator uninstalls its
+ * release, so its Job and pods go, and with them the volumes they held. The AIJob record and its
+ * results stay. A retention of one minute after completion, which has long passed.
+ */
+export async function cleanUpRun(store: any, clusterId: string, namespace: string, run: string): Promise<void> {
+  await store.dispatch('cluster/request', {
+    url:     `/k8s/clusters/${ encodeURIComponent(clusterId) }/apis/ai-factory.suse.com/v1alpha1/namespaces/${ encodeURIComponent(namespace) }/aijobs/${ encodeURIComponent(run) }`,
+    method:  'PATCH',
+    headers: { 'content-type': 'application/merge-patch+json' },
+    data:    { spec: { retention: { executionObjects: '1m' } } },
+  });
 }
