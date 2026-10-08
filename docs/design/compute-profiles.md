@@ -196,6 +196,53 @@ The pack says **what the platform intends to allow**.
 
 It does not need to contain the exact storage class, scheduler configuration, pull secret, or GPU model for every cluster.
 
+### 4.1 Packs today: Helm charts, tiered by GPU memory
+
+Until profiles are `ComputeProfile` resources, a pack is a Helm chart of profile ConfigMaps (the
+form AI Factory reads today), installed into `ai-profiles` on the cluster that runs the work: with
+`helm install`, from Rancher's Apps, or through Fleet to many clusters. AI Factory ships four
+hardware-neutral profiles itself (CPU Smoke Test, CPU Job, PyTorch GPU Test, Single GPU
+Development); every other profile comes from a pack.
+
+Packs are tiered by **GPU memory**, the main thing that decides which models and runs fit, not by
+GPU model or by FLOPS (which decide how fast a run goes, not whether it can):
+
+| Pack | GPU memory | For example |
+|---|---|---|
+| `nvidia-16g` | up to 16 GB | RTX A2000, T4 |
+| `nvidia-48g` | 24–48 GB | L4, A10, L40S, RTX 6000 Ada |
+| `nvidia-96g` | 80–96 GB | A100 80 GB, H100, RTX PRO 6000 |
+| `nvidia-180g` | 141–192 GB | H200, B200, GB200 |
+
+A cluster can install every tier: each profile says what it needs, and a cluster shows only the
+profiles it can run. Profiles tied to particular hardware rather than to a size (NVL72 compute
+domains, MIG layouts, a lab's diagnostics) come in small add-on packs.
+
+A profile states its needs in `requires`:
+
+```yaml
+requires:
+  gpuMemoryGiB: 70          # per GPU, at least
+  gpusPerNode: 4            # on one node, at least
+  nodes: 2                  # GPU nodes that each meet the above (multi-node runs)
+  computeCapability: "9.0"  # at least: 8.0 Ampere (BF16), 9.0 Hopper (FP8), 10.0 Blackwell (FP4)
+  driver: 580               # NVIDIA driver major version, at least
+  arch: [amd64, arm64]      # CPU architectures its images are built for
+```
+
+Its values add needs of their own: a GPU at all unless `gpu.mode: none`, a GPU at least as large as
+a GPU-memory share and KAI to schedule it, and as many GPUs on one node as the fewest per worker a
+user may choose. These are checked against what the nodes report (GPU Feature Discovery's
+`nvidia.com/gpu.memory`, `gpu.compute.major`/`minor`, `cuda.driver-version.major`, the node's
+`kubernetes.io/arch` and its allocatable `nvidia.com/gpu`). A fact a node does not report is unknown,
+and an unknown never rules a profile out.
+
+The same rules run in three places: each cluster's Catalog shows the profiles that fit and, on
+request, the others with why they would not run there; the Submit page fails a run whose profile
+the cluster cannot run; and the SDK refuses one before installing it (`ai.profiles.fits()` answers
+ahead of time). Under the admission policy (sections 9 to 12) the same check becomes the cluster's
+to enforce.
+
 ## 5. Bound compute profiles
 
 Before a profile can be used on a cluster, AI Factory binds the portable profile to that cluster's capabilities and configuration.
