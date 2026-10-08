@@ -189,11 +189,9 @@ data:
         checkpointCreate:
           enabled: true
           size: 5Gi
-          storageClass: longhorn
           keep: false
         scratchSize: 10Gi
         scratchMedium: volume
-        scratchStorageClass: longhorn
     editable:
     - nodes
     - datasetPVC

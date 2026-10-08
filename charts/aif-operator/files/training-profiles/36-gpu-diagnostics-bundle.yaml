@@ -131,7 +131,6 @@ data:
         checkpointCreate:
           enabled: true
           size: 1Gi
-          storageClass: longhorn
           keep: true
     editable: []
     limits:

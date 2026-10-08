@@ -35,7 +35,7 @@ DIAG = {"image": {"repository": "registry.suse.com/bci/bci-base", "tag": "15.7"}
         "job": {"kind": "job", "mode": "custom", "nodes": 1, "gpusPerNode": 1, "command": ["sh", "-c", script("gpu_diagnostics_bundle.sh")]},
         "resources": {"requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "1Gi"}},
         # the bundle lands on a small volume kept after the run, for download
-        "storage": {"checkpointCreate": {"enabled": True, "size": "1Gi", "storageClass": "longhorn", "keep": True}}}
+        "storage": {"checkpointCreate": {"enabled": True, "size": "1Gi", "keep": True}}}
 
 # CPU only: a SUSE BCI Python image, CPU-only PyTorch and transformers installed when the run starts,
 # the test script passed in an environment variable. No GPU, no pull secret: runs on any cluster.
@@ -85,8 +85,8 @@ PROFILES = [
         "displayName": "Training + Storage Test", "purpose": "test", "framework": "PyTorch", "status": "beta",
         "description": "The path a training run takes: a dataset (synthetic on scratch, or your dataset volume) through a DataLoader into training on the GPU, then a checkpoint written and read back. Reports throughput at each step.",
         "values": torchrun("training_storage_test.py", 1, {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "2Gi"}, rendezvous={"backend": "c10d"},
-                           storage={"checkpointCreate": {"enabled": True, "size": "5Gi", "storageClass": "longhorn", "keep": False},
-                                    "scratchSize": "10Gi", "scratchMedium": "volume", "scratchStorageClass": "longhorn"},
+                           storage={"checkpointCreate": {"enabled": True, "size": "5Gi", "keep": False},
+                                    "scratchSize": "10Gi", "scratchMedium": "volume"},
                            env=ENV + [{"name": "SHARDS", "value": "16"}]),
         "editable": ["nodes", "datasetPVC", "gpuShareMiB"], "limits": {"nodes": {"min": 1, "max": 4}, "maxRuntimeHours": 1}}),
     ("36-gpu-diagnostics-bundle", "gpu-diagnostics-bundle", {
