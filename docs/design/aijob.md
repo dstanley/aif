@@ -42,7 +42,9 @@ that applies to an execution that ends.
 
 Lifecycle is the kind: AIWorkload keeps running, AIJob ends. Purpose is a
 field, `category`, on Blueprint, AIWorkload, and AIJob, with values
-`inference`, `training`, `agent`, `rag`, `data`, and `custom`. The UI
+`inference`, `training`, `test`, `benchmark`, `agent`, `rag`, `data`, and `custom`. A run's
+category is its profile's purpose (training, test or benchmark), or `training` for a run
+submitted without a profile. The UI
 filters and groups on it. An agent is a long-running service, so it is an
 AIWorkload with category `agent`; its governance stays with the platform
 that provides it. The `category` field is a separate, smaller independent

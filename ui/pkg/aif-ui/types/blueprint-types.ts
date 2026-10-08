@@ -20,7 +20,7 @@ export type BlueprintOrigin = typeof BLUEPRINT_ORIGINS[number];
 
 // What a blueprint, or a workload made from one, is for. Must match the CRD
 // enum in aif-operator/api/v1alpha1/blueprint_types.go (WorkloadCategory).
-export const WORKLOAD_CATEGORIES = ['inference', 'training', 'agent', 'rag', 'data', 'custom'] as const;
+export const WORKLOAD_CATEGORIES = ['inference', 'training', 'test', 'benchmark', 'agent', 'rag', 'data', 'custom'] as const;
 export type WorkloadCategory = typeof WORKLOAD_CATEGORIES[number];
 
 export interface BlueprintSpec {

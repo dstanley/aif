@@ -58,7 +58,7 @@ const (
 // for. It is a label for people and for the UI to filter and group on; the
 // operator does not change its behaviour by category. Lifecycle is the
 // kind, category is the purpose.
-// +kubebuilder:validation:Enum=inference;training;agent;rag;data;custom
+// +kubebuilder:validation:Enum=inference;training;test;benchmark;agent;rag;data;custom
 type WorkloadCategory string
 
 const (

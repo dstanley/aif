@@ -78,6 +78,8 @@ spec:
                 enum:
                 - inference
                 - training
+                - test
+                - benchmark
                 - agent
                 - rag
                 - data
