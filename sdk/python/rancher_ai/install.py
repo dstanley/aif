@@ -7,7 +7,7 @@ Two ways, chosen by the connection:
   - otherwise: the helm CLI, against the chart's OCI reference (RANCHER_AI_CHART, or the ClusterRepo's
     URL when it is an oci:// one).
 Either way the release is an ordinary Helm release that Rancher lists under Installed Apps and the
-Deployments page shows.
+Jobs page shows.
 
 Where the cluster has the AIJob API (AI Factory's operator), neither is used: the run is an AIJob,
 the durable record the operator installs the chart from and keeps after the Job is gone."""

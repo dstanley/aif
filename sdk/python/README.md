@@ -9,13 +9,22 @@ Use it to:
 - submit, follow and inspect training runs;
 - deploy and chat with inference endpoints;
 - read the results of tests and benchmarks;
-- inspect, download from and clean up kept checkpoint volumes.
+- look inside the volumes runs create, copy files of any size off them, and clean up the
+  checkpoints you no longer need.
 
-The SDK applies the same profile rules and project settings as the UI, and what it starts shows on
-the Deployments page, and the other way round. Training runs are AIJobs where the cluster has the
+The SDK applies the same profile rules and project settings as the UI, and what it starts shows in
+the UI (training runs on each cluster's AI Jobs → Jobs page, inference endpoints on AI Factory's
+Workloads page), and the other way round. Training runs are AIJobs where the cluster has the
 AIJob API, and Helm releases where it does not.
 
 Sample profiles: [../../examples/training/profiles](../../examples/training/profiles).
+
+**In a Jupyter notebook**, one cell installs it straight from GitHub (no `git` needed in the
+notebook's environment), then restart the kernel if `rancher_ai` was already imported:
+
+```python
+%pip install -q "rancher-ai[pandas] @ https://github.com/dstanley/aif/archive/refs/heads/pr/7-designs.tar.gz#subdirectory=sdk/python"
+```
 
 ## Install
 
@@ -73,6 +82,9 @@ $ rancher-ai -p team-a endpoint list
 NAME   PROFILE                        PROJECT   MODEL                        URL                                 STATE
 chat   suse-inference-endpoint-qwen   team-a    Qwen/Qwen2.5-1.5B-Instruct   http://litellm.team-a.svc:4000/v1   Ready
 $ rancher-ai -p team-a endpoint chat chat "What is a large language model?"
+
+$ rancher-ai -p team-a checkpoints list                               # see Checkpoint volumes
+$ rancher-ai -p team-a volumes get dev-cli-demo-checkpoints adapter ./  # a file or folder, any size
 ```
 
 `-o json|yaml` works on lists and status.
@@ -120,7 +132,7 @@ A warning passes but is worth knowing; any failed check fails the result, and `r
 Any run can report a result the same way: its script prints one line that starts with `AIF_RESULT `
 followed by a JSON object. When the run finishes, the operator reads the last such line from the
 first worker's log (rank 0) and keeps it in the AIJob's `status.report`, so the result outlives the
-pods and their logs. The run's detail on the Deployments page shows it as a results card,
+pods and their logs. The run's detail on the Jobs page shows it as a results card,
 `run result` prints it, and `run.result()` returns it as a dict.
 
 ```python
@@ -169,7 +181,7 @@ files* fetches it.
 so a card shows information, not proof: don't use it as a security or compliance gate. The
 safeguards are about where a report can come from and how it is shown, not whether it is true:
 only a pod the run's own Job (or PyTorchJob) created can report for it, the log read is capped, and
-every value is treated as untrusted text: the Deployments page and notebook cards escape it, and
+every value is treated as untrusted text: the Jobs page and notebook cards escape it, and
 `run result` replaces control characters and line breaks before printing.
 
 ## Python and Jupyter
@@ -310,9 +322,10 @@ rotates container logs at 10 MiB); for larger ones, use `volumes.get` below. A d
 Only volumes the chart created for a run are managed (its labels and the `<run>-checkpoints` name),
 never a dataset or a shared PVC; a volume a pod mounts, or whose run is still active, is refused; and
 nothing is deleted without confirmation. With Longhorn (reclaim policy Delete) deleting the claim
-deletes the data. The Deployments page offers the same: *Browse files* (with a download per file,
-up to the same size) and *Delete volume* in a run's detail, and in the list of kept volumes whose
-run is gone.
+deletes the data. The UI offers the same on each cluster's AI Jobs → Data page, which lists every
+volume runs created there, with *Browse files* (folder by folder, a download per file up to the
+same size, and the `volumes get` command for a larger one) and *Delete*; and in a run's detail on
+the Jobs page.
 
 ## Copying files of any size off a volume
 
@@ -341,8 +354,8 @@ be mounted by a running pod on another node. `examples/volumes/volume-get.sh` do
 
 The SDK enforces a profile's fields and limits itself, but does not yet run the cluster-side
 pre-flight checks the Deploy page runs: free GPUs, quota headroom, storage classes and image cache.
-The chart's own install-time pre-flight still applies, and `run status` and the Deployments page
-show why a submitted run is waiting.
+The chart's own install-time pre-flight still applies, and `run status` and the Jobs page show why
+a submitted run is waiting.
 
 ## How it maps to AI Factory
 
@@ -350,12 +363,14 @@ show why a submitted run is waiting.
 |---|---|---|
 | Catalog → Training, Inference | `profiles list` | `ai.profiles.list()` |
 | Deploy a training profile | `run create` | `ai.runs.create()` |
-| Deployments → Training | `run list`, `run status` | `ai.runs.list()`, `run.status()` |
+| AI Jobs → Jobs | `run list`, `run status` | `ai.runs.list()`, `run.status()` |
 | A run's logs | `run logs` | `run.logs()` |
 | Catalog → Validate your environment | `run create` + `run result` | `run.result()` |
 | Deploy an inference profile | `endpoint create` | `ai.endpoints.create()` |
 | An inference endpoint | `endpoint chat` | `endpoint.chat()` |
-| Kept checkpoint volumes | `checkpoints` | `ai.checkpoints` |
+| AI Jobs → Data: kept checkpoint volumes | `checkpoints list`, `checkpoints delete` | `ai.checkpoints` |
+| AI Jobs → Data: Browse files | `checkpoints ls` | `vol.ls()` |
+| A file too big to download there | `volumes get` | `ai.volumes.get()` |
 
 ### Developer notes
 

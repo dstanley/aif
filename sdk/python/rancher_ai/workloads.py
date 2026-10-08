@@ -1,4 +1,4 @@
-"""Training runs and inference endpoints, with the states the Deployments page shows
+"""Training runs and inference endpoints, with the states the UI shows
 (ui/pkg/aif-ui/training/trainingruns.ts and runs.ts)."""
 
 from __future__ import annotations
@@ -165,8 +165,8 @@ class TrainingRun:
 
     @property
     def dashboard(self) -> str | None:
-        # AI Factory's Deployments page, Training tab
-        return self.client.conn.dashboard(f"suseai/workloads?tab=training&q={self.name}")
+        # the cluster's AI Jobs → Jobs page, opened on this run
+        return self.client.conn.dashboard(f"aitraining/jobs?q={self.name}")
 
     def _repr_html_(self) -> str:
         return RunStatus(self)._repr_html_()
@@ -231,7 +231,7 @@ class Endpoint:
         end = time.time() + timeout
         while self.refresh().state != "Ready":
             if self.state == "Failed":
-                raise RuntimeError(f"{self.name} failed; see `rancher-ai endpoint list` or the Deployments page")
+                raise RuntimeError(f"{self.name} failed; see `rancher-ai endpoint list` or AI Factory's Workloads page")
             if time.time() > end:
                 raise TimeoutError(f"{self.name} still {self.state} after {timeout:.0f}s")
             time.sleep(interval)

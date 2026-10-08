@@ -80,7 +80,7 @@ class Checkpoint:
         if "TOOBIG" in out:
             size = next((ln.split()[1] for ln in out.splitlines() if ln.startswith("SIZE ")), "?")
             raise CheckpointError(f"{path} is {size} bytes, over the {MAX_GET_BYTES // 2**20} MiB a copy through a pod's "
-                                  f"log can carry; mount {self.name} in a pod and use kubectl cp")
+                                  f"log can carry; ai.volumes.get({self.name!r}, {path!r}) copies it whatever its size")
         lines = out.splitlines()
         if BEGIN not in lines or END not in lines[lines.index(BEGIN):]:
             raise CheckpointError(f"copying {path} did not complete; try again")
