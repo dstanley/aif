@@ -282,6 +282,10 @@ rancherReadinessCheck:
 # The default training and test profiles (ConfigMaps in ai-profiles, readable by every
 # authenticated user): what a cluster's Catalog offers when nobody has written profiles yet. The
 # training agent AI Factory installs on an AI-enabled cluster turns this on.
+# The four core profiles (CPU Smoke Test, CPU Job, PyTorch GPU Test, Single GPU Development) in
+# ai-profiles. Off here: set it true where AI Factory runs to have them; the training agent on an
+# AI-enabled cluster sets it itself. Profiles for particular hardware come from profile packs, each
+# a Helm chart of profiles installed on its own.
 trainingProfiles:
   install: false
 

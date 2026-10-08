@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-// The sample profiles in examples/training/profiles/ are what a platform team copies.
+// The core profiles in examples/training/profiles/ (the chart ships the same ones) are what a platform
+// team starts from; packs of profiles for particular hardware are Helm charts of their own.
 // A sample with a value the form cannot hold, or an editable field that does not exist, would show
 // its problems as a warning on the Profiles page; these keep the samples free of them.
 import { existsSync, readdirSync, readFileSync } from 'fs';
@@ -26,7 +27,7 @@ const profiles = profilesFrom(docs.filter((d) => d?.kind === 'ConfigMap'), (s: s
 
 describe('sample profiles', () => {
   it('are all found', () => {
-    expect(profiles.map((p) => p.name).sort()).toEqual(['cpu-inference-test', 'cpu-job', 'cpu-smoke-test', 'gpu-diagnostics-bundle', 'gpu-diagnostics-bundle-shared', 'gpu-health-check', 'gpu-smoke', 'gpu-smoke-shared', 'nccl-fabric-benchmark', 'pytorch-distributed', 'pytorch-distributed-test', 'pytorch-gpu-test', 'pytorch-gpu-test-shared', 'shared-gpu-dev', 'single-gpu-dev', 'suse-inference-endpoint-qwen', 'suse-inference-endpoint-qwen-shared', 'training-storage-test']);
+    expect(profiles.map((p) => p.name).sort()).toEqual(['cpu-job', 'cpu-smoke-test', 'pytorch-gpu-test', 'single-gpu-dev']);
   });
 
   it('have no problems', () => {
@@ -44,8 +45,9 @@ describe('sample profiles', () => {
   it('mark the environment checks as tests or benchmarks', () => {
     const purpose = Object.fromEntries(profiles.map((p) => [p.name, p.purpose]));
 
-    expect(purpose['gpu-smoke']).toBe('test');
-    expect(purpose['nccl-fabric-benchmark']).toBe('benchmark');
-    expect(purpose['pytorch-distributed']).toBe('training');
+    expect(purpose['pytorch-gpu-test']).toBe('test');
+    expect(purpose['cpu-smoke-test']).toBe('test');
+    expect(purpose['single-gpu-dev']).toBe('training');
+    expect(purpose['cpu-job']).toBe('training');
   });
 });

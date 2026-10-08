@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Build the test and benchmark profiles in ../profiles from the scripts in this directory, so a
-profile always carries its script's current text. Run after changing a script:
+"""Build the core test profiles in ../profiles from the scripts in this directory, so a profile
+always carries its script's current text. Run after changing a script:
 
   python3 examples/training/tests/build_profiles.py
+
+These are AI Factory's hardware-neutral checks (PyTorch GPU Test, CPU Smoke Test). Tests and
+benchmarks tuned to particular hardware live in profile packs, each a Helm chart of profiles, such
+as those in https://github.com/dstanley/aif-lab/tree/main/profile-packs.
 """
 import os
 
@@ -27,90 +31,17 @@ def torchrun(name, nodes, requests, **extra):
     return v
 
 
-SMOKE = {"image": {"repository": "registry.suse.com/bci/bci-base", "tag": "15.7"},
-         "job": {"kind": "job", "mode": "custom", "nodes": 1, "gpusPerNode": 1, "command": ["sh", "-c", script("gpu_smoke_test.sh")]},
-         "resources": {"requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "1Gi"}}}
 SMALL = {"cpu": "1", "memory": "4Gi", "ephemeral-storage": "2Gi"}
-DIAG = {"image": {"repository": "registry.suse.com/bci/bci-base", "tag": "15.7"},
-        "job": {"kind": "job", "mode": "custom", "nodes": 1, "gpusPerNode": 1, "command": ["sh", "-c", script("gpu_diagnostics_bundle.sh")]},
-        "resources": {"requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "1Gi"}},
-        # the bundle lands on a small volume kept after the run, for download
-        "storage": {"checkpointCreate": {"enabled": True, "size": "1Gi", "keep": True}}}
-
-# CPU only: a SUSE BCI Python image, CPU-only PyTorch and transformers installed when the run starts,
-# the test script passed in an environment variable. No GPU, no pull secret: runs on any cluster.
-CPU_INSTALL = ("pip install -q --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 && "
-               "pip install -q --no-cache-dir transformers==4.51.3 && "
-               "printf '%s\\n' \"$TEST_PY\" > /tmp/test.py && exec python3 /tmp/test.py")
-CPU = {"image": {"repository": "registry.suse.com/bci/python", "tag": "3.12"},
-       "gpu": {"mode": "none"},
-       "job": {"kind": "job", "mode": "custom", "nodes": 1, "gpusPerNode": 1, "command": ["sh", "-c", CPU_INSTALL]},
-       "resources": {"requests": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "6Gi"}},
-       "env": ENV + [{"name": "HF_HOME", "value": "/tmp/hf"}, {"name": "PIP_DISABLE_PIP_VERSION_CHECK", "value": "1"},
-                     {"name": "TEST_PY", "value": script("cpu_inference_test.py")}]}
 
 # CPU only, with PyTorch in the image: torchrun on CPUs (Gloo), no GPU, no pull secret.
 TORCH_CPU = {"repository": "pytorch/pytorch", "tag": "2.5.1-cuda12.4-cudnn9-runtime"}
 
 PROFILES = [
-    ("12-gpu-smoke", "gpu-smoke", {
-        "displayName": "GPU Smoke Test", "purpose": "test", "framework": "CUDA", "status": "ready",
-        "description": "About 30 seconds on one whole GPU per worker: the GPU is allocated, the NVIDIA driver answers, the CUDA runtime and device memory are reported. No PyTorch needed.",
-        "values": SMOKE, "editable": ["nodes"], "limits": {"nodes": {"min": 1, "max": 4}, "maxRuntimeHours": 1}}),
-    ("30-gpu-smoke-shared", "gpu-smoke-shared", {
-        "displayName": "GPU Smoke Test (shared GPU)", "purpose": "test", "framework": "CUDA", "status": "ready",
-        "description": "The smoke test on a 1 GiB GPU-memory share, as shared workloads get their GPU: placed by the GPU-sharing scheduler, capped at its share.",
-        "values": {**SMOKE, "gpu": {"sharedMemoryMiB": 1024}}, "editable": [], "limits": {"nodes": {"min": 1, "max": 1}, "maxRuntimeHours": 1}}),
     ("31-pytorch-gpu-test", "pytorch-gpu-test", {
         "displayName": "PyTorch GPU Test", "purpose": "test", "framework": "PyTorch", "status": "ready",
         "description": "About a minute on one whole GPU: PyTorch sees CUDA and the GPU, allocates memory, multiplies matrices in FP32, FP16 and BF16, and trains a few steps. Reports versions and TFLOPS.",
         "values": torchrun("pytorch_gpu_test.py", 1, SMALL), "editable": ["image", "tag"],
         "limits": {"nodes": {"min": 1, "max": 1}, "registries": ["dp.apps.rancher.io/containers/", "nvcr.io/nvidia/", "pytorch/"], "maxRuntimeHours": 1}}),
-    ("32-pytorch-gpu-test-shared", "pytorch-gpu-test-shared", {
-        "displayName": "PyTorch GPU Test (shared GPU)", "purpose": "test", "framework": "PyTorch", "status": "ready",
-        "description": "The PyTorch GPU test on a 4 GiB GPU-memory share: PyTorch, CUDA and compute through the GPU-sharing layer, inside the share's memory cap.",
-        "values": torchrun("pytorch_gpu_test.py", 1, SMALL, gpu={"sharedMemoryMiB": 4096}), "editable": ["image", "tag"],
-        "limits": {"nodes": {"min": 1, "max": 1}, "registries": ["dp.apps.rancher.io/containers/", "nvcr.io/nvidia/", "pytorch/"], "maxRuntimeHours": 1}}),
-    ("33-pytorch-distributed-test", "pytorch-distributed-test", {
-        "displayName": "PyTorch Distributed Test", "purpose": "test", "framework": "PyTorch", "status": "ready",
-        "description": "About two minutes on 2 or more workers, one whole GPU each: torchrun rendezvous, NCCL initialisation, a checked all-reduce and DDP training steps. Needs a separate GPU per worker.",
-        "values": torchrun("pytorch_distributed_test.py", 2, {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "2Gi"}, rendezvous={"backend": "c10d"}),
-        "editable": ["nodes"], "limits": {"nodes": {"min": 2, "max": 8}, "maxRuntimeHours": 1}}),
-    ("34-nccl-fabric-benchmark", "nccl-fabric-benchmark", {
-        "displayName": "NCCL Fabric Benchmark", "purpose": "benchmark", "framework": "PyTorch", "status": "beta",
-        "description": "Measures GPU-to-GPU collective bandwidth: NCCL all-reduce from 1 MiB to 1 GiB, reported as algorithm and bus bandwidth, as nccl-tests' all_reduce_perf does. 2 or more workers, one whole GPU each.",
-        "values": torchrun("nccl_fabric_benchmark.py", 2, {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "2Gi"}, rendezvous={"backend": "c10d"}),
-        "editable": ["nodes", "gpusPerNode"], "limits": {"nodes": {"min": 2, "max": 16}, "gpusPerNode": {"min": 1, "max": 8}, "maxRuntimeHours": 1}}),
-    ("35-training-storage-test", "training-storage-test", {
-        "displayName": "Training + Storage Test", "purpose": "test", "framework": "PyTorch", "status": "beta",
-        "description": "The path a training run takes: a dataset (synthetic on scratch, or your dataset volume) through a DataLoader into training on the GPU, then a checkpoint written and read back. Reports throughput at each step.",
-        "values": torchrun("training_storage_test.py", 1, {"cpu": "2", "memory": "8Gi", "ephemeral-storage": "2Gi"}, rendezvous={"backend": "c10d"},
-                           storage={"checkpointCreate": {"enabled": True, "size": "5Gi", "keep": False},
-                                    "scratchSize": "10Gi", "scratchMedium": "volume"},
-                           env=ENV + [{"name": "SHARDS", "value": "16"}]),
-        "editable": ["nodes", "datasetPVC", "gpuShareMiB"], "limits": {"nodes": {"min": 1, "max": 4}, "maxRuntimeHours": 1}}),
-    ("36-gpu-diagnostics-bundle", "gpu-diagnostics-bundle", {
-        "displayName": "GPU Diagnostics Bundle", "purpose": "test", "framework": "CUDA", "status": "beta",
-        "description": "Collects what NVIDIA support asks for first (nvidia-smi -q, topology, ECC, clocks, PCIe, driver and libraries) into a .tar.gz on a kept volume, and checks it: uncorrected ECC errors, pending memory repair, throttling, temperature, PCIe link width.",
-        "values": DIAG, "editable": [], "limits": {"nodes": {"min": 1, "max": 1}, "maxRuntimeHours": 1}}),
-    ("37-gpu-diagnostics-bundle-shared", "gpu-diagnostics-bundle-shared", {
-        "displayName": "GPU Diagnostics Bundle (shared GPU)", "purpose": "test", "framework": "CUDA", "status": "beta",
-        "description": "The diagnostics bundle from a 1 GiB GPU-memory share, for a GPU that is shared: what a shared workload sees, collected and checked.",
-        "values": {**DIAG, "gpu": {"sharedMemoryMiB": 1024}}, "editable": [], "limits": {"nodes": {"min": 1, "max": 1}, "maxRuntimeHours": 1}}),
-    ("38-gpu-health-check", "gpu-health-check", {
-        "displayName": "GPU Health Check", "purpose": "test", "framework": "DCGM", "status": "beta",
-        "description": "NVIDIA DCGM diagnostics on one whole GPU. Level 1 (about 30 seconds) checks the deployment and the GPU's state; set DCGM_LEVEL=2 for PCIe bandwidth, memory and a short stress (a few minutes).",
-        # NVIDIA's DCGM image, as the GPU Operator uses: neither the SUSE Application Collection nor
-        # the SUSE registry ships DCGM.
-        "values": {"image": {"repository": "nvcr.io/nvidia/cloud-native/dcgm", "tag": "4.5.2-1-ubuntu22.04"},
-                   "job": {"kind": "job", "mode": "custom", "nodes": 1, "gpusPerNode": 1, "command": ["sh", "-c", script("gpu_health_check.sh")]},
-                   "resources": {"requests": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}},
-                   "env": [{"name": "DCGM_LEVEL", "value": "1"}]},
-        "editable": ["env"], "limits": {"nodes": {"min": 1, "max": 1}, "maxRuntimeHours": 1}}),
-    ("39-cpu-inference-test", "cpu-inference-test", {
-        "displayName": "CPU Inference Test", "purpose": "test", "framework": "PyTorch (CPU)", "status": "beta",
-        "description": "A few minutes on CPUs alone, no GPU: a small instruction model (Qwen2.5-0.5B-Instruct) is downloaded, loaded and answers three questions. Checks that a cluster can take a run end to end; reports load time and tokens per second.",
-        "values": CPU, "editable": ["env"], "limits": {"nodes": {"min": 1, "max": 1}, "maxRuntimeHours": 1}}),
     ("41-cpu-smoke-test", "cpu-smoke-test", {
         "displayName": "CPU Smoke Test", "purpose": "test", "framework": "PyTorch (CPU)", "status": "ready",
         "description": "About a minute on CPUs alone, no GPU: PyTorch, the CPUs and memory the pod is given, a matrix multiply, a training step, a Gloo collective and file I/O. Checks that a cluster can run a PyTorch job on CPUs.",
@@ -120,7 +51,6 @@ PROFILES = [
                    "resources": {"requests": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}}, "env": ENV},
         "editable": ["nodes"], "limits": {"nodes": {"min": 1, "max": 2}, "maxRuntimeHours": 1}}),
 ]
-
 
 class Literal(str):
     pass

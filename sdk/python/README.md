@@ -17,7 +17,13 @@ the UI (training runs on each cluster's AI Jobs → Jobs page, inference endpoin
 Workloads page), and the other way round. Training runs are AIJobs where the cluster has the
 AIJob API, and Helm releases where it does not.
 
-Sample profiles: [../../examples/training/profiles](../../examples/training/profiles).
+AI Factory ships four hardware-neutral profiles ([../../examples/training/profiles](../../examples/training/profiles)):
+CPU Smoke Test, CPU Job, PyTorch GPU Test and Single GPU Development. Profiles tuned to particular
+hardware come in profile packs, each a Helm chart of profiles, tiered by GPU memory: the examples
+below use profiles from [nvidia-tests](https://github.com/dstanley/aif-lab/tree/main/profile-packs/nvidia-tests)
+(`gpu-diagnostics-bundle-shared`, `nccl-fabric-benchmark` and other tests) and
+[nvidia-16g](https://github.com/dstanley/aif-lab/tree/main/profile-packs/nvidia-16g)
+(`shared-gpu-dev`, `suse-inference-endpoint-qwen`).
 
 **In a Jupyter notebook**, one cell installs it straight from GitHub (no `git` needed in the
 notebook's environment), then restart the kernel if `rancher_ai` was already imported:
