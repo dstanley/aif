@@ -1198,8 +1198,12 @@ export default defineComponent({
 
         // With the AIJob API the run is a record the operator installs from and keeps afterwards.
         if (this.$store.getters['cluster/schemaFor'](AIJOB_TYPE)) {
+          // the run's category is its profile's purpose: a test or a benchmark, not only training
+          const profileName = this.effectiveValues?.profile;
+          const purpose = profileName ? profilesFrom(this.allConfigMaps, (s: string) => jsyaml.load(s)).find((x) => x.name === profileName)?.purpose : undefined;
+
           await this.$store.dispatch('cluster/create', aiJobFor({
-            name: this.form.releaseName, namespace: this.form.namespace, repoName, chartName: CHART_NAME, version, values: this.effectiveValues
+            name: this.form.releaseName, namespace: this.form.namespace, repoName, chartName: CHART_NAME, version, values: this.effectiveValues, purpose
           })).then((job: any) => job.save());
           this.submitted = { operationName: '', operationNamespace: '' };
           done(true);

@@ -12,6 +12,8 @@ export interface AIJobInput {
   version: string;
   values: any;
   displayName?: string;
+  // the purpose of the profile the run starts from (training, test, benchmark): the AIJob's category
+  purpose?: 'training' | 'test' | 'benchmark';
 }
 
 /**
@@ -33,7 +35,7 @@ export function aiJobFor(i: AIJobInput): any {
     metadata:   { name: i.name, namespace: i.namespace },
     spec:       {
       ...(i.displayName ? { displayName: i.displayName } : {}),
-      category: 'training',
+      category: i.purpose || 'training',
       ...(profile ? { profile } : {}),
       source:   {
         repoName: i.repoName, chartName: i.chartName, version: i.version

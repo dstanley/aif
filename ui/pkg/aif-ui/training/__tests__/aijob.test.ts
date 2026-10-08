@@ -33,4 +33,10 @@ describe('aiJobFor', () => {
     aiJobFor({ ...input, values });
     expect(values.preflight.checkHeadroom).toBe(true);
   });
+
+  it('takes its category from the profile\'s purpose, training when there is none', () => {
+    expect(aiJobFor({ ...input, values: {} }).spec.category).toBe('training');
+    expect(aiJobFor({ ...input, values: {}, purpose: 'test' }).spec.category).toBe('test');
+    expect(aiJobFor({ ...input, values: {}, purpose: 'benchmark' }).spec.category).toBe('benchmark');
+  });
 });
