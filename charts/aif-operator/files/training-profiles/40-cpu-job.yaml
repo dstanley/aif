@@ -13,6 +13,8 @@ data:
     displayName: CPU Job
     description: A job on CPUs, no GPU, for data preparation, preprocessing and small experiments. Bring a script, or run the built-in check. Stopped after 4 hours.
     framework: PyTorch (CPU)
+    # pytorch/pytorch is built for amd64 only
+    requires: { arch: [amd64] }
     status: ready
     values:
       image: { repository: pytorch/pytorch, tag: 2.5.1-cuda12.4-cudnn9-runtime }

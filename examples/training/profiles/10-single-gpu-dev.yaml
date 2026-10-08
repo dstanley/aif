@@ -13,6 +13,8 @@ data:
     displayName: Single GPU Development
     description: One worker with one GPU for development and small fine-tunes. Stopped after 4 hours.
     framework: PyTorch
+    # the Application Collection image's CUDA 13 needs driver 580+; it is built for amd64 and arm64
+    requires: { driver: 580, arch: [amd64, arm64] }
     status: ready
     values:
       image: { repository: dp.apps.rancher.io/containers/pytorch, tag: 2.14.0-nvidia-2.1 }

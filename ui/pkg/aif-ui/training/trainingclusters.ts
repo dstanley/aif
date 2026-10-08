@@ -4,6 +4,7 @@
 // which clusters serve the AIJob API and what runs there. A cluster that does not serve it is not a
 // training cluster; one the user cannot read is listed with that said, not hidden.
 
+import { NodeFacts, nodeFacts } from './fit';
 import { getClusters } from '../services/cluster-service';
 
 export const AIJOB_LIST_PATH = '/apis/ai-factory.suse.com/v1alpha1/aijobs';
@@ -72,7 +73,7 @@ export async function hasProfile(store: any, clusterId: string, profile: string)
 }
 
 /** A cluster's GPUs: how many its nodes offer, and which models. */
-export interface ClusterGpus { count: number; models: string[] }
+export interface ClusterGpus { count: number; models: string[]; nodes?: NodeFacts[] }
 
 export function gpusOfNodes(nodes: any[]): ClusterGpus {
   let count = 0;
@@ -87,7 +88,7 @@ export function gpusOfNodes(nodes: any[]): ClusterGpus {
     }
   }
 
-  return { count, models: [...models] };
+  return { count, models: [...models], nodes: nodeFacts(nodes || []) };
 }
 
 /** The GPUs a cluster's nodes offer, through Rancher's proxy; null when its nodes cannot be read. */

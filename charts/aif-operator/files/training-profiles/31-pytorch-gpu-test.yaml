@@ -125,6 +125,11 @@ data:
     editable:
     - image
     - tag
+    requires:
+      driver: 580
+      arch:
+      - amd64
+      - arm64
     limits:
       nodes:
         min: 1

@@ -5,6 +5,7 @@
 // multi-cluster install. Apps, from the operator's curated catalog, are applications too, when the
 // user shows them. The Blueprints tab lists every blueprint, wrapped or not, by itself.
 
+import { fitOf, needsOf, NodeFacts } from './fit';
 import type { Profile } from './profiles';
 
 export type CatalogKind = 'training' | 'inference' | 'application';
@@ -179,4 +180,29 @@ export function fitToCluster(items: CatalogItem[], gpus: number | null, showAll:
   const fit = items.filter((i) => !needsGpu(i));
 
   return { items: fit, hidden: items.length - fit.length };
+}
+
+/**
+ * What a cluster's Catalog offers: the profiles its nodes can run (fit.ts), the others counted, and
+ * left out unless showAll, when they come back with the reasons they would not run. Null facts (the
+ * nodes could not be read) leave everything in.
+ */
+export function fitCatalog(items: CatalogItem[], facts: NodeFacts[] | null, sharing: boolean | null, showAll: boolean): { items: CatalogItem[]; hidden: number; misfit: Record<string, string[]> } {
+  if (!facts) {
+    return { items, hidden: 0, misfit: {} };
+  }
+  const misfit: Record<string, string[]> = {};
+
+  for (const i of items) {
+    if (i.from === 'profile' && i.profile) {
+      const f = fitOf(needsOf(i.profile), facts, sharing);
+
+      if (!f.fits) {
+        misfit[i.key] = f.reasons;
+      }
+    }
+  }
+  const hidden = Object.keys(misfit).length;
+
+  return showAll ? { items, hidden: 0, misfit } : { items: items.filter((i) => !misfit[i.key]), hidden, misfit };
 }

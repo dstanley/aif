@@ -17,6 +17,7 @@
 // Helm and the chart can still install whatever values they like. Enforcement belongs to an
 // admission policy (the governance layer in docs/concepts/ai-workloads-profiles.md), not here.
 
+import { parseRequires, ProfileRequires } from './fit';
 import { gpuShort } from './gputypes';
 import { Check, DEFAULT_FORM, Form, formFromValues } from './preflight';
 
@@ -74,6 +75,9 @@ export interface Profile {
   fixed: (keyof Form)[]; // fields the profile's values set explicitly
   editable: EditableField[];
   limits: ProfileLimits;
+  // What the profile needs of a cluster (GPU memory, GPUs per node, compute capability, driver, CPU
+  // architecture), beyond what its values imply; the Catalog shows only the profiles a cluster fits.
+  requires: ProfileRequires;
   // Problems with the profile itself: values the form cannot hold (they would be dropped at
   // submit), unknown editable fields. A profile with problems is still listed, with a warning.
   problems: string[];
@@ -180,6 +184,7 @@ export function profileFromConfigMap(cm: any, parseYaml: (s: string) => any): Pr
   if (doc.namePrefix && !namePrefix) {
     problems.push(`namePrefix "${ doc.namePrefix }" must be lowercase letters, numbers and hyphens (max 22)`);
   }
+  const requires = parseRequires(doc.requires, problems);
 
   return {
     name:        cm.metadata.name,
@@ -198,6 +203,7 @@ export function profileFromConfigMap(cm: any, parseYaml: (s: string) => any): Pr
     fixed:       fieldsSetBy(values),
     editable,
     limits,
+    requires,
     problems,
   };
 }

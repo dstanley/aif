@@ -4,6 +4,7 @@
 import { GpuType, gpuShort, sameGpu } from './gputypes';
 import { SharedGpu, sharedGpuChecks, kaiShareChecks } from './gpushare';
 import { ClusterCapacity, QueueIndex, availability, explain } from './quota';
+import { fitOf, needsOf, NodeFacts, ProfileRequires } from './fit';
 
 export type Severity = 'pass' | 'fail' | 'warn' | 'info';
 
@@ -59,6 +60,8 @@ export interface GpuNode {
 
 export interface Facts {
   loaded: boolean;
+  // what each node reports (GPU memory, compute capability, driver, CPU architecture), for a profile's requires
+  nodeFacts?: NodeFacts[];
   namespaces: string[];
   kueueInstalled: boolean;
   kaiInstalled: boolean;
@@ -1531,4 +1534,23 @@ export function storageClassChecks(id: string, label: string, size: string, clas
   add('pass', `${ label }: new ${ size } from "${ chosen.name }"`, `${ describe }${ wait }`);
 
   return out;
+}
+
+/**
+ * Whether the cluster can run the profile the run starts from (fit.ts): the profile's requires and
+ * what its values imply, against the nodes. Null when there is no profile or nothing to check.
+ */
+export function profileFitCheck(profile: { type?: string; form?: any; requires?: ProfileRequires; limits?: any; displayName?: string } | null | undefined, facts: Facts): Check | null {
+  if (!profile || !facts.loaded || !facts.nodeFacts) {
+    return null;
+  }
+  const f = fitOf(needsOf(profile), facts.nodeFacts, facts.kaiInstalled);
+
+  return f.fits ?
+    {
+      id: 'profile-fit', severity: 'pass', title: `This cluster meets what ${ profile.displayName || 'the profile' } needs`, detail: ''
+    } :
+    {
+      id: 'profile-fit', severity: 'fail', title: `${ profile.displayName || 'The profile' } cannot run on this cluster`, detail: `${ f.reasons.join('; ') }.`
+    };
 }

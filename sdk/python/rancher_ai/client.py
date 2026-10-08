@@ -59,6 +59,21 @@ class Client:
             self._installer = install.installer(self.conn, self._chart)
         return self._installer
 
+    def fits(self, profile_type: str, values: dict, requires: dict, min_workers: int | None = None) -> tuple[bool, list[str]]:
+        """Whether this cluster can run a profile with these values (fit.py), and why not. Nodes it cannot
+        read make the answer unknown, which does not refuse a run."""
+        from . import fit
+        try:
+            nodes = self.conn.core.list_node().items
+        except k8s.ApiException:
+            return True, []
+        try:
+            self.conn.custom.list_cluster_custom_object("scheduling.run.ai", "v2", "queues", limit=1)
+            sharing: bool | None = True
+        except k8s.ApiException as e:
+            sharing = False if e.status == 404 else None
+        return fit.fit(fit.needs_of(profile_type, values, requires, min_workers), fit.node_facts(nodes), sharing)
+
     def whoami(self) -> dict:
         return self.conn.whoami()
 
@@ -102,6 +117,12 @@ class Profiles:
         out = [p for p in (prof.from_configmap(cm) for cm in cms) if p and (not type or p.type == type)]
         return sorted(out, key=lambda p: (p.type != "training", p.name))
 
+    def fits(self, name: str) -> tuple[bool, list[str]]:
+        """Whether this cluster can run the profile as it ships (its requires, its GPU share, its GPUs per
+        worker), and why not: what the Catalog shows."""
+        p = self.get(name)
+        return self.c.fits(p.type, prof.resolve(p, {}), p.requires, (p.limits.get("nodes") or {}).get("min"))
+
     def get(self, name: str) -> Profile:
         p = next((p for p in self.all() if p.name == name), None)
         if not p:
@@ -139,12 +160,14 @@ class Runs:
         self.c = c
 
     def create(self, profile: str, project: str | None = None, name: str | None = None, wait_for_job: float = 60,
-               dry_run: bool = False, demo: bool = False, **fields: Any) -> workloads.TrainingRun | dict:
+               dry_run: bool = False, demo: bool = False, check_fit: bool = True, **fields: Any) -> workloads.TrainingRun | dict:
         """Start a training run from a training profile. Fields are the ones the profile opens:
         image ("repo:tag"), workers, gpus_per_worker, command, args, script, env (dict), dataset, checkpoints,
         config_map, gpu_type, gpu_memory (GiB, shared GPU), runtime_hours, priority_class. When the
         profile lets you supply code, pass script= or config_map=, or demo=True for the chart's built-in
-        all-reduce check. dry_run returns the values."""
+        all-reduce check. dry_run returns the values. A profile the cluster cannot run (its requires, a
+        GPU share without KAI, more GPUs than a node has) is refused before anything is installed, as in
+        the UI; check_fit=False skips that."""
         p = self.c.profiles.get(profile)
         if p.type != "training":
             raise ProfileError(f"{profile} is an inference profile; use endpoints.create")
@@ -164,6 +187,10 @@ class Runs:
             elif not script.strip() and not config_map:
                 problems.append("no code: pass script= (your train.py), config_map= (a ConfigMap with a train.py key), "
                                 "or demo=True for the built-in all-reduce check")
+        if check_fit:
+            fits, reasons = self.c.fits(p.type, values, p.requires)
+            if not fits:
+                problems.append(f"{p.display_name} cannot run on this cluster: " + "; ".join(reasons))
         if problems:
             raise ProfileError("; ".join(problems))
         missing = prof.missing_packages((values.get("image") or {}).get("repository", ""), script)

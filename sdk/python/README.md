@@ -217,6 +217,17 @@ run.delete(); endpoint.delete()
 [`examples/kai-share-lora-demo.ipynb`](examples/kai-share-lora-demo.ipynb) fine-tunes two LoRA
 adapters on GPU shares beside a running endpoint.
 
+Before starting a run, `ai.profiles.fits("<profile>")` says whether this cluster can run it, and why
+not: its `requires` (GPU memory, GPUs per node, GPU nodes, compute capability, driver, CPU
+architecture), its GPU share (KAI), its GPUs per worker, against what the nodes report. `runs.create`
+refuses a profile the cluster cannot run with the same reasons, before anything is installed
+(`check_fit=False` skips it). The Catalog shows only the profiles that fit, by the same rules.
+
+```python
+ai.profiles.fits("pytorch-gpu-test")   # (True, [])
+# (False, ["it needs 70 GiB of GPU memory, compute capability 9.0; this cluster's best is 12 GiB GPUs, compute capability 8.6, driver 580"])
+```
+
 ### Jupyter on your machine (Docker)
 
 Step by step for Rancher Desktop or Docker Desktop, from starting the container to the first

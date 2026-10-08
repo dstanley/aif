@@ -25,13 +25,14 @@ import { trainingLink } from '../section';
 import {
   chartValuesFor, Check, DEFAULT_FORM, Facts, Form, estimateScratch, formFromManifest, formFromValues, GpuNode,
   checksFor, isQueueScheduler, parseCpu, parseMem, PvcInfo, resolveGpuMode, runPreflight, SCHEDULER_BINDING,
-  StorageClassInfo, summarize
+  StorageClassInfo, summarize, profileFitCheck
 } from '../preflight';
 import {
   availability, buildQueueIndex, clusterCapacity, namespaceQueueMap, usageFromPods, withPodUsage
 } from '../quota';
 import { pvcRole } from '../checkpoints';
 import { Profile, PROFILE_NAMESPACE, profilesFrom } from '../profiles';
+import { nodeFacts } from '../fit';
 import { aiJobFor, AIJOB_TYPE } from '../aijob';
 import { groupOf, readiness } from '../readiness';
 import { gpuInventory, gpuShort, hasGfdLabels } from '../gputypes';
@@ -157,7 +158,16 @@ export default defineComponent({
 
   computed: {
     checks(): Check[] {
-      return checksFor(runPreflight(this.form, this.facts), { profile: !!this.$route.query.authorProfile, scheduler: this.form.scheduler });
+      // and whether the cluster can run the profile the run starts from (its requires; fit.ts)
+      const fit = this.$route.query.authorProfile ? null : profileFitCheck(this.runProfile, this.facts);
+
+      return checksFor([...runPreflight(this.form, this.facts), ...(fit ? [fit] : [])], { profile: !!this.$route.query.authorProfile, scheduler: this.form.scheduler });
+    },
+    /** The profile the run starts from, if any. */
+    runProfile(): Profile | null {
+      const name = this.effectiveValues?.profile;
+
+      return name ? profilesFrom(this.allConfigMaps, (s: string) => jsyaml.load(s)).find((x: Profile) => x.name === name) || null : null;
     },
     profileMode(): boolean {
       return !!this.$route.query.authorProfile;
@@ -1075,6 +1085,7 @@ export default defineComponent({
       });
       this.namespaceQueues = nsQueue;
       facts.namespaceQueue = nsQueue[this.form.namespace] || null;
+      facts.nodeFacts = nodeFacts(nodes);
       facts.loaded = true;
 
       this.facts = facts;

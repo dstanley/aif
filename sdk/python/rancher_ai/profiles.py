@@ -10,6 +10,8 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
+from .fit import parse_requires
+
 import yaml
 
 PROFILE_NAMESPACE = "ai-profiles"
@@ -111,6 +113,7 @@ class Profile:
     limits: dict = field(default_factory=dict)
     name_prefix: str = ""
     purpose: str = "training"  # training | test | benchmark: the category of the runs it starts
+    requires: dict = field(default_factory=dict)  # what it needs of a cluster (see fit.py)
     blueprint: dict | None = None
     required_secrets: list[dict] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
@@ -167,6 +170,7 @@ def from_configmap(cm: Any) -> Profile | None:
         editable=[f for f in editable if f in EDITABLE], limits=limits,
         name_prefix=str(doc.get("namePrefix") or ""), blueprint=doc.get("blueprint"),
         purpose=doc.get("purpose") if doc.get("purpose") in ("test", "benchmark") else "training",
+        requires=parse_requires(doc.get("requires"), problems),
         required_secrets=doc.get("requiredSecrets") or [], problems=problems,
     )
 

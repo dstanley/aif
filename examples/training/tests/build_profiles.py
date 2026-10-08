@@ -41,6 +41,8 @@ PROFILES = [
         "displayName": "PyTorch GPU Test", "purpose": "test", "framework": "PyTorch", "status": "ready",
         "description": "About a minute on one whole GPU: PyTorch sees CUDA and the GPU, allocates memory, multiplies matrices in FP32, FP16 and BF16, and trains a few steps. Reports versions and TFLOPS.",
         "values": torchrun("pytorch_gpu_test.py", 1, SMALL), "editable": ["image", "tag"],
+        # the Application Collection image's CUDA 13 needs driver 580+; it is built for amd64 and arm64
+        "requires": {"driver": 580, "arch": ["amd64", "arm64"]},
         "limits": {"nodes": {"min": 1, "max": 1}, "registries": ["dp.apps.rancher.io/containers/", "nvcr.io/nvidia/", "pytorch/"], "maxRuntimeHours": 1}}),
     ("41-cpu-smoke-test", "cpu-smoke-test", {
         "displayName": "CPU Smoke Test", "purpose": "test", "framework": "PyTorch (CPU)", "status": "ready",
@@ -49,7 +51,9 @@ PROFILES = [
                    "job": {"kind": "job", "mode": "torchrun", "nodes": 1, "gpusPerNode": 1, "script": script("cpu_smoke_test.py")},
                    "rendezvous": {"backend": "c10d"},
                    "resources": {"requests": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}}, "env": ENV},
-        "editable": ["nodes"], "limits": {"nodes": {"min": 1, "max": 2}, "maxRuntimeHours": 1}}),
+        "editable": ["nodes"], "limits": {"nodes": {"min": 1, "max": 2}, "maxRuntimeHours": 1},
+        # pytorch/pytorch is built for amd64 only
+        "requires": {"arch": ["amd64"]}}),
 ]
 
 class Literal(str):

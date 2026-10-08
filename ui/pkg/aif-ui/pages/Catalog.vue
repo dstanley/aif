@@ -22,11 +22,13 @@ import { fetchStaticCatalog } from '../services/static-catalog';
 import { resolveInstallRepoName } from '../services/app-collection';
 import { PRODUCT } from '../config/suseai';
 import { profilesFrom, Profile } from '../training/profiles';
-import { DEPLOY_PAGE, ENDPOINT_PAGE, SUBMIT_PAGE } from '../training/config';
+import { DEPLOY_PAGE, ENDPOINT_PAGE, SUBMIT_PAGE, TYPES } from '../training/config';
 import {
-  CatalogApp, CatalogBlueprint, CatalogItem, CatalogKind, CatalogTab, catalogItems, catalogSections, deployLabel, filterCatalog, fitToCluster, tabItems
+  CatalogApp, CatalogBlueprint, CatalogItem, CatalogKind, CatalogTab, catalogItems, catalogSections, deployLabel, filterCatalog, fitCatalog, tabItems
 } from '../training/catalog';
 import { clusterGpus } from '../training/trainingclusters';
+import { NodeFacts } from '../training/fit';
+import { fetchProfileConfigMaps } from '../training/jobspage';
 import {
   CATALOG_SHOW_APPS, CATALOG_SHOW_WRAPPED, getPref, setPref
 } from '../training/prefs';
@@ -82,9 +84,14 @@ const showApps = computed({
 const items = computed(() => catalogItems(profiles.value, blueprints.value, showWrapped.value, showApps.value ? apps.value : []));
 // in a cluster's section, the Catalog fits the cluster: no GPU profiles where there are no GPUs
 // (unless asked for), CPU-only profiles apart where there are
+// and only the profiles its nodes can run (GPU memory, GPUs per node, compute capability, driver,
+// CPU architecture; fit.ts), the others behind Show all, with their reasons
 const clusterGpuCount = ref<number | null>(null);
+const clusterNodes = ref<NodeFacts[] | null>(null);
 const showAllProfiles = ref(false);
-const fitted = computed(() => (clusterSection ? fitToCluster(items.value, clusterGpuCount.value, showAllProfiles.value) : { items: items.value, hidden: 0 }));
+const fitted = computed(() => (clusterSection ?
+  fitCatalog(items.value, clusterNodes.value, !!store.getters['cluster/schemaFor'](TYPES.KAI_QUEUE), showAllProfiles.value) :
+  { items: items.value, hidden: 0, misfit: {} as Record<string, string[]> }));
 const visible = computed(() => filterCatalog(tabItems(tab.value, fitted.value.items, blueprints.value), '', filter.value));
 // tests and benchmarks under their own heading; one untitled section when there are none
 const sections = computed(() => catalogSections(visible.value, clusterSection && (clusterGpuCount.value || 0) > 0));
@@ -98,13 +105,15 @@ async function load() {
   error.value = '';
   try {
     if (clusterSection) {
+      // the profiles from their own namespace, not every ConfigMap in the cluster
       const [cms, gpus] = await Promise.all([
-        store.dispatch('cluster/findAll', { type: 'configmap', opt: { force: true } }),
+        fetchProfileConfigMaps(store),
         clusterGpus(store, String(vm.$route.params.cluster)),
       ]);
 
       profiles.value = profilesFrom(cms, (s: string) => jsyaml.load(s));
       clusterGpuCount.value = gpus ? gpus.count : null;
+      clusterNodes.value = gpus?.nodes ?? null;
 
       return;
     }
@@ -342,10 +351,10 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
         class="catalog-fit"
       >
         <template v-if="fitted.hidden">
-          {{ fitted.hidden }} GPU profile{{ fitted.hidden === 1 ? '' : 's' }} hidden: this cluster has no GPUs.
+          {{ fitted.hidden }} profile{{ fitted.hidden === 1 ? '' : 's' }} hidden: this cluster cannot run {{ fitted.hidden === 1 ? 'it' : 'them' }}{{ clusterGpuCount === 0 ? ' (it has no GPUs)' : '' }}.
         </template>
         <template v-else>
-          Showing every profile, including those that need a GPU this cluster does not have.
+          Showing every profile, with why those this cluster cannot run would not.
         </template>
         <button
           type="button"
@@ -461,6 +470,12 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
                 <p class="tile-description">
                   {{ i.description || '—' }}
                 </p>
+                <p
+                  v-if="fitted.misfit[i.key]"
+                  class="tile-misfit"
+                >
+                  <i class="icon icon-warning" /> Won't run on this cluster: {{ fitted.misfit[i.key].join('; ') }}.
+                </p>
               </div>
               <div class="tile-footer">
                 <button
@@ -517,6 +532,7 @@ const deployText = (i: CatalogItem) => t(`suseai.pages.catalog.deploy.${ i.purpo
 
 <style lang="scss" scoped>
 .catalog-fit { margin: 0 0 12px; font-size: 14px; opacity: 0.8; }
+.tile-misfit { margin: 8px 0 0; font-size: 12px; color: var(--warning); }
 .catalog-fit-toggle { background: none; border: 0; padding: 0 0 0 8px; color: var(--link); cursor: pointer; font-size: 14px; }
 
 .fixed-header {
