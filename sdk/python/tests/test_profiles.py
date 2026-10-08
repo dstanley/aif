@@ -99,3 +99,18 @@ def test_mounting_an_existing_checkpoint_volume_replaces_the_one_a_profile_creat
     EDITABLE["checkpointPVC"](values, "dev-r0m7s-checkpoints")
     assert values["storage"]["checkpointPVC"] == "dev-r0m7s-checkpoints"
     assert values["storage"]["checkpointCreate"]["enabled"] is False
+
+
+def test_a_profile_s_purpose_is_the_category_of_its_runs():
+    import yaml
+    from rancher_ai.install import aijob_for
+    from rancher_ai.profiles import PROFILE_LABEL, from_configmap
+
+    def cm(name, doc):
+        return {"metadata": {"name": name, "labels": {PROFILE_LABEL: "training"}}, "data": {"profile.yaml": yaml.safe_dump(doc)}}
+    test = from_configmap(cm("smoke", {"displayName": "Smoke", "purpose": "test", "values": {}}))
+    plain = from_configmap(cm("dev", {"displayName": "Dev", "values": {}}))
+    odd = from_configmap(cm("odd", {"displayName": "Odd", "purpose": "party", "values": {}}))
+    assert (test.purpose, plain.purpose, odd.purpose) == ("test", "training", "training")
+    assert aijob_for("ns", "dev-a", {}, "smoke", "1.0", test.purpose)["spec"]["category"] == "test"
+    assert aijob_for("ns", "dev-a", {}, "", "1.0")["spec"]["category"] == "training"

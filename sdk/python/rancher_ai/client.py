@@ -176,7 +176,7 @@ class Runs:
             return values
         if self._exists(ns, name):
             raise ProfileError(f"{name} already exists in {ns}; choose another name")
-        self.c.installer.install(ns, name, values, p.name)
+        self.c.installer.install(ns, name, values, p.name, p.purpose)
         end = time.time() + wait_for_job
         while True:
             try:
