@@ -73,3 +73,26 @@ def test_progress_prints_every_tenth_of_a_known_size(capsys):
     on2 = _progress(1000, quiet=True)
     on2(1000)
     assert capsys.readouterr().out == ""
+
+
+def test_a_copy_reports_what_it_copied_or_why_not():
+    from rancher_ai.checkpoints import CheckpointError
+    from rancher_ai.volumes import parse_copy
+
+    assert parse_copy("cp: ...\nAIF_COPY ok 11 1090519040\n") == {"files": 11, "bytes": 1090519040}
+    for line, says in (("AIF_COPY exists /dst/lora-adapters/a", "overwrite=True"),
+                       ("AIF_COPY missing /src/run/adapter", "not on the source volume"),
+                       ("AIF_COPY mismatch /dst/a", "nothing was put in place")):
+        with pytest.raises(CheckpointError, match=says):
+            parse_copy(line)
+    with pytest.raises(CheckpointError, match="no result"):
+        parse_copy("sh: killed")
+
+
+def test_the_copy_script_quotes_its_paths_and_renames_into_place():
+    from rancher_ai.volumes import copy_script
+
+    s = copy_script("/src/it's here", "/dst/lora-adapters/a", overwrite=False)
+    assert "s='/src/it'\\''s here'" in s
+    assert 'mv "$t" "$d"' in s and s.index("sha256sum") < s.index('mv "$t" "$d"')
+    assert "[ 0 = 0 ]" in s and "[ 1 = 0 ]" in copy_script("/src/a", "/dst/a", overwrite=True)

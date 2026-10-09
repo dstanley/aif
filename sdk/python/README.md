@@ -367,6 +367,63 @@ On the lab cluster a 2.9 GiB file takes about 95 seconds, and the notebook's mem
 be mounted by a running pod on another node. `examples/volumes/volume-get.sh` does the same with
 `kubectl` alone.
 
+## Copying between volumes, in the cluster
+
+`volumes.copy` copies a file or a folder from one volume to another without it leaving the cluster:
+a one-pod Job mounts both, copies, compares every file's SHA-256 with the source's, and only then
+renames the copy into place, so a reader of the destination never sees half of it. A destination
+volume that does not exist is created when `size` is given; an existing path is replaced only with
+`overwrite=True`. If a running pod mounts either volume, the copy runs on that pod's node, so a
+single-node volume (local-path, or Longhorn ReadWriteOnce) in use by a server can still be written.
+It needs no `pods/exec`: the result comes back through the Job's log.
+
+```python
+ai.volumes.copy("train-aobpo-checkpoints", "train-aobpo/adapter",          # from: volume, path
+                "vllm-qwen-32b-storage-claim", "lora-adapters/suse-32b")   # to: volume, path
+# {'files': 11, 'bytes': 1090519040, 'volume': 'vllm-qwen-32b-storage-claim', 'path': 'lora-adapters/suse-32b'}
+```
+
+```console
+$ rancher-ai -p ai-data-science volumes copy train-aobpo-checkpoints train-aobpo/adapter \
+    vllm-qwen-32b-storage-claim lora-adapters/suse-32b
+```
+
+### Serving a trained adapter with vLLM
+
+The vLLM chart the inference blueprints use (`vllm`, Application Collection) keeps each model on a
+volume of its own, `<release>-<model>-storage-claim`, mounted at `/data`; with `enableLoRA: true` its
+adapters live in `/data/lora-adapters`. So an adapter is copied there, then loaded:
+
+1. The model entry (`servingEngineSpec.modelSpec[]`): the same base model the adapter was trained on,
+   and LoRA on, with room for the adapter's rank (vLLM's default maximum is 16) and runtime loading:
+
+   ```yaml
+   enableLoRA: true
+   vllmConfig:
+     maxLoras: 4
+     extraArgs: ["--max-lora-rank", "32"]
+   env:
+     - { name: VLLM_ALLOW_RUNTIME_LORA_UPDATING, value: "True" }
+   ```
+
+2. Copy the adapter onto the model's volume (above).
+3. Load it, by name, from inside the cluster (the engine's Service, on port 80 unless the chart's
+   `servingEngineSpec.servicePort` says otherwise):
+
+   ```python
+   import requests
+   requests.post("http://<release>-<model>-engine-service/v1/load_lora_adapter",
+                 json={"lora_name": "suse-32b", "lora_path": "/data/lora-adapters/suse-32b"}).raise_for_status()
+   ```
+
+   Requests then name the adapter as their model (`"model": "suse-32b"`); `/v1/models` lists it. To
+   load it at every start instead, add `"--lora-modules", "suse-32b=/data/lora-adapters/suse-32b"` to
+   `extraArgs` once the adapter is on the volume. Behind a gateway (LiteLLM in the inference-endpoint
+   blueprint), add a model entry for the adapter's name too.
+
+Only `adapter_config.json` and `adapter_model.safetensors` are needed; the tokenizer files the
+training script saves beside them are ignored.
+
 ## Current limitations
 
 The SDK enforces a profile's fields and limits itself, but does not yet run the cluster-side

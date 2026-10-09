@@ -123,6 +123,15 @@ def main(argv: list[str] | None = None) -> int:
     vg.add_argument("path", help="file or folder on the volume, from its root")
     vg.add_argument("dest", nargs="?", default=".", help="where to put it (default: here)")
     vg.add_argument("-q", "--quiet", action="store_true", help="no progress")
+    vc = vp.add_parser("copy", help="copy a file or a folder from one volume to another, in the cluster (checksums compared)")
+    vc.add_argument("name", help="the source volume (PersistentVolumeClaim)")
+    vc.add_argument("path", help="file or folder on it, from its root")
+    vc.add_argument("to", help="the destination volume")
+    vc.add_argument("to_path", nargs="?", help="where on it (default: the same name, at its root)")
+    vc.add_argument("--size", help="create the destination volume this size if it does not exist (e.g. 10Gi)")
+    vc.add_argument("--storage-class", help="the new volume's storage class (default: the cluster's)")
+    vc.add_argument("--overwrite", action="store_true", help="replace what is already at the destination path")
+    vc.add_argument("-q", "--quiet", action="store_true", help="no progress")
     kp = sub.add_parser("checkpoints", aliases=["checkpoint"], help="checkpoint volumes runs created and kept").add_subparsers(dest="verb", required=True)
     kl = kp.add_parser("list")
     kl.add_argument("-A", "--all-projects", action="store_true")
@@ -256,6 +265,11 @@ def main(argv: list[str] | None = None) -> int:
 
         elif noun == "volumes" and a.verb == "get":
             print(ai.volumes.get(a.name, a.path, a.dest, quiet=a.quiet))
+
+        elif noun == "volumes" and a.verb == "copy":
+            r = ai.volumes.copy(a.name, a.path, a.to, a.to_path, size=a.size, storage_class=a.storage_class,
+                                overwrite=a.overwrite, quiet=a.quiet or a.output != "table")
+            emit(r) if a.output != "table" else print(f"{r['volume']}:{r['path']}")
 
         elif noun == "checkpoints" and a.verb == "list":
             t = ai.checkpoints.table(all_projects=a.all_projects)
