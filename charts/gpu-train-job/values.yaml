@@ -195,6 +195,7 @@ resources:
     cpu: "1"
     memory: 2Gi
     ephemeral-storage: 2Gi        # container writable layer + logs; lets the scheduler account for node disk
+  # A request above its limit raises the limit to it (a profile that asks for 128Gi gets a 128Gi limit)
   limits:
     cpu: "4"
     memory: 8Gi

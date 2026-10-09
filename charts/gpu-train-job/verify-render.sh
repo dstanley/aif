@@ -125,5 +125,28 @@ check_ckpt "custom mode (the image's own code) gets one"   1 1 --set job.mode=cu
 check_ckpt "the demo gets one with forDemo"                1 1 --set job.mode=torchrun --set storage.checkpointCreate.forDemo=true
 check_ckpt "an existing volume is mounted, even for the demo" 0 1 --set job.mode=torchrun --set storage.checkpointCreate.enabled=false --set storage.checkpointPVC=mine
 
+echo
+echo "limits (each at least its request; a Job with a request above its limit is refused at admission):"
+limits() {
+  helm template t . --set job.kind="$1" --set job.mode=torchrun --set preflight.enabled=false "${@:2}" 2>/dev/null | python3 -c "
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d.get('kind') in ('Job', 'PyTorchJob'):
+        spec = d['spec']['template']['spec'] if d['kind'] == 'Job' else d['spec']['pytorchReplicaSpecs']['Master']['template']['spec']
+        l = spec['containers'][0]['resources']['limits']; print(l.get('cpu'), l.get('memory'), l.get('ephemeral-storage')); break"
+}
+check_limits() {
+  local desc="$1" want="$2"; shift 2
+  local got; got=$(limits "$@")
+  if [ "$got" = "$want" ]; then printf '✓ %s\n' "$desc"; else printf '✗ %s — limits %s, want %s\n' "$desc" "$got" "$want"; fail=1; fi
+}
+check_limits "the defaults stay"                         "4 8Gi 20Gi"     job
+check_limits "a 16Gi request raises the 8Gi limit"       "4 16Gi 20Gi"    job --set resources.requests.memory=16Gi
+check_limits "16 CPUs, 128Gi: both raised"               "16 128Gi 20Gi"  job --set resources.requests.cpu=16 --set resources.requests.memory=128Gi
+check_limits "the same for a PyTorchJob"                 "4 16Gi 20Gi"    pytorchjob --set job.nodes=2 --set resources.requests.memory=16Gi
+check_limits "smaller requests leave the limits"         "4 8Gi 20Gi"     job --set resources.requests.cpu=500m --set resources.requests.memory=1G
+check_limits "a higher limit that is set is kept"        "4 64Gi 20Gi"    job --set resources.requests.memory=16Gi --set resources.limits.memory=64Gi
+check_limits "unit forms compare by value (20G > 16Gi)"  "4 20G 20Gi"     job --set resources.requests.memory=20G --set resources.limits.memory=16Gi
+
 [ $fail -eq 0 ] && echo "chart render checks passed" || echo "chart render checks FAILED"
 exit $fail

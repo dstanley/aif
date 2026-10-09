@@ -181,6 +181,26 @@ project: {{ required "scheduler.queue is required when scheduler.type=runai" .Va
 {{- end }}
 {{- end -}}
 
+{{/*
+The limits: resources.limits, each raised to its request where the request is larger. The form and
+profiles set requests only, so a profile asking for more than a default limit (16Gi of memory against
+the default 8Gi) would otherwise render a Job Kubernetes refuses (a request above its limit), before
+any pod exists. A limit with no request, or no limit at all, stays as it is.
+*/}}
+{{- define "gpu-train-job.limits" -}}
+{{- $limits := deepCopy (.Values.resources.limits | default dict) -}}
+{{- range $k, $req := (.Values.resources.requests | default dict) -}}
+  {{- $lim := index $limits $k -}}
+  {{- if $lim -}}
+    {{- $q := ternary "gpu-train-job.cpuMilli" "gpu-train-job.memMi" (eq $k "cpu") -}}
+    {{- if gt (include $q $req | int64) (include $q $lim | int64) -}}
+      {{- $_ := set $limits $k $req -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- toYaml $limits -}}
+{{- end -}}
+
 {{- define "gpu-train-job.resourceBlock" -}}
 requests:
   {{- toYaml .Values.resources.requests | nindent 2 }}
@@ -188,7 +208,7 @@ requests:
   {{ .Values.gpu.resourceName }}: {{ .Values.job.gpusPerNode | quote }}
   {{- end }}
 limits:
-  {{- toYaml .Values.resources.limits | nindent 2 }}
+  {{- include "gpu-train-job.limits" . | nindent 2 }}
   {{- if eq (include "gpu-train-job.gpuMode" .) "device-plugin" }}
   {{ .Values.gpu.resourceName }}: {{ .Values.job.gpusPerNode | quote }}
   {{- end }}
