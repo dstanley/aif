@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseResult, reportResult } from '../results';
+import { failureOf, parseResult, reportResult } from '../results';
 
 describe('parseResult', () => {
   const line = (r: any) => `AIF_RESULT ${ JSON.stringify(r) }`;
@@ -56,5 +56,38 @@ describe('reportResult', () => {
     expect(reportResult({ status: {} })).toBeNull();
     expect(reportResult({ spec: { chart: {} } })).toBeNull();
     expect(reportResult(null)).toBeNull();
+  });
+});
+
+describe('failureOf', () => {
+  const invalid = '1 error occurred:\n\t* Job.batch "train-hi736" is invalid: spec.template.spec.containers[0].resources.requests: Invalid value: "16Gi": must be less than or equal to memory limit of 8Gi\n\n';
+
+  it('a run refused at install says why, though it never had a pod', () => {
+    const f = failureOf({ status: { phase: 'Failed', result: { reason: 'InstallFailed', message: invalid } } });
+
+    expect(f).toMatchObject({ title: 'The run could not be installed', reason: 'InstallFailed', waiting: false });
+    expect(f?.message).toBe('Job.batch "train-hi736" is invalid: spec.template.spec.containers[0].resources.requests: Invalid value: "16Gi": must be less than or equal to memory limit of 8Gi');
+  });
+
+  it('a run that failed later gives its reason too', () => {
+    expect(failureOf({ status: { phase: 'Failed', result: { reason: 'BackoffLimitExceeded', message: 'Job has reached the specified backoff limit' } } }))
+      .toMatchObject({ title: 'The run failed', message: 'Job has reached the specified backoff limit' });
+  });
+
+  it('an install the operator is still retrying shows as waiting', () => {
+    const f = failureOf({ status: { phase: 'Pending', conditions: [
+      { type: 'Ready', status: 'False', reason: 'Waiting', message: 'not yet' },
+      { type: 'Installed', status: 'False', reason: 'InstallFailed', message: 'chart gpu-train-job not found' },
+    ] } });
+
+    expect(f).toMatchObject({ title: 'The run cannot start yet', waiting: true, message: 'chart gpu-train-job not found' });
+  });
+
+  it('nothing for a run that is fine, finished, or not an AIJob', () => {
+    expect(failureOf({ status: { phase: 'Running', conditions: [{ type: 'Installed', status: 'True', reason: 'Installed' }] } })).toBeNull();
+    expect(failureOf({ status: { phase: 'Completed', result: { reason: 'Succeeded' } } })).toBeNull();
+    expect(failureOf({ status: { phase: 'Failed' } })).toBeNull();
+    expect(failureOf({ kind: 'Job', status: { succeeded: 1 } })).toBeNull();
+    expect(failureOf(null)).toBeNull();
   });
 });

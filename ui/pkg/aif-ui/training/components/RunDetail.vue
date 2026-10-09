@@ -9,7 +9,7 @@ import VolumeFiles from './VolumeFiles.vue';
 import { podRank, primaryPod } from '../pods';
 import { podRole, Run } from '../runs';
 import type { CheckpointVolume } from '../checkpoints';
-import { parseResult, reportResult, RunResult } from '../results';
+import { failureOf, parseResult, reportResult, RunFailure, RunResult } from '../results';
 import { readPodLog } from '../podlog';
 import { describeLatest, isStarting, podEvents } from '../podevents';
 
@@ -49,6 +49,10 @@ export default defineComponent({
     },
     startingKey(): string {
       return this.startingPods.map((p: any) => p.metadata?.name).join(',');
+    },
+    // why the run failed or cannot start, from its AIJob: the only record when no pod ever existed
+    failure(): RunFailure | null {
+      return this.run.type === 'training' ? failureOf(this.run.obj) : null;
     },
     // the result the run's AIJob kept when it finished; it outlives the pods
     kept(): RunResult | null {
@@ -184,6 +188,18 @@ export default defineComponent({
 
 <template>
   <div class="tj-detail">
+    <section
+      v-if="failure"
+      :class="['tj-failure', { waiting: failure.waiting }]"
+      role="alert"
+    >
+      <strong><i class="icon icon-warning" /> {{ failure.title }}</strong>
+      <span
+        v-if="failure.reason"
+        class="text-muted"
+      >{{ failure.reason }}</span>
+      <pre v-if="failure.message">{{ failure.message }}</pre>
+    </section>
     <!-- ======== training ======== -->
     <template v-if="run.type === 'training' && t0">
       <div class="tj-facts">
@@ -450,6 +466,12 @@ export default defineComponent({
 .tj-rank-menu { position: fixed; z-index: 100; min-width: 96px; background: var(--dropdown-bg, var(--body-bg)); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); padding: 3px 0; }
 .tj-rank-item { display: block; width: 100%; background: none; border: none; text-align: left; padding: 3px 10px; font-size: 12px; cursor: pointer;
   &:hover { background: var(--dropdown-hover-bg, var(--accent-btn)); } }
+.tj-failure {
+  border: 1px solid var(--error); border-left-width: 4px; border-radius: 4px; padding: 8px 12px; margin-bottom: 12px;
+  &.waiting { border-color: var(--warning); }
+  strong { margin-right: 8px; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; font-size: 12px; background: none; padding: 0; }
+}
 .tj-result {
   border: 1px solid var(--border);
   border-left: 4px solid var(--success);

@@ -59,3 +59,37 @@ function toResult(r: any): RunResult {
     env:     r.env && typeof r.env === 'object' ? r.env : {},
   };
 }
+
+export interface RunFailure { title: string; reason: string; message: string; waiting: boolean }
+
+// Why a run failed, or why it cannot start, as its AIJob recorded it: status.result for a run that
+// ended, else a condition that is False with a message (an install the operator keeps retrying). A
+// run refused before any pod existed (an invalid Job, a chart that cannot be fetched) has no log, so
+// this is the only place the reason is.
+export function failureOf(aiJob: any): RunFailure | null {
+  const st = aiJob?.status;
+
+  if (!st) {
+    return null;
+  }
+  const tidy = (m: any) => String(m || '').replace(/^\s*\d+ errors? occurred:\s*/, '').replace(/^\s*\*\s*/gm, '').trim();
+
+  if (st.phase === 'Failed' && (st.result?.message || st.result?.reason)) {
+    const reason = String(st.result.reason || '');
+
+    return {
+      title:   reason === 'InstallFailed' ? 'The run could not be installed' : 'The run failed',
+      reason,
+      message: tidy(st.result.message),
+      waiting: false,
+    };
+  }
+  if (st.phase === 'Failed' || st.phase === 'Completed' || st.phase === 'Cancelled') {
+    return null;
+  }
+  const stuck = (st.conditions || []).find((c: any) => c?.status === 'False' && c?.message && /Failed$/.test(c.reason || ''));
+
+  return stuck ? {
+    title: 'The run cannot start yet', reason: String(stuck.reason), message: tidy(stuck.message), waiting: true
+  } : null;
+}
