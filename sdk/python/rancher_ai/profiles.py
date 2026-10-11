@@ -218,10 +218,14 @@ TORCH_ONLY_IMAGES = {"dp.apps.rancher.io/containers/pytorch"}
 COMPANIONS = ["torchvision", "torchaudio", "transformers", "datasets", "peft", "accelerate", "timm"]
 
 
+SELF_INSTALLS = re.compile(r"""["'\s-]m["',\s]+(pip|ensurepip)\b|\bpip3? install\b""")
+
+
 def missing_packages(image: str, code: str) -> list[str]:
     """What `code` imports that a torch-only image does not have. Mirrors missingPackages()."""
     repo = (image or "").strip().lower().removeprefix("docker.io/")
-    if repo not in TORCH_ONLY_IMAGES or not code:
+    # a script that installs its own packages (pip, or Python's bundled ensurepip) needs no warning
+    if repo not in TORCH_ONLY_IMAGES or not code or SELF_INSTALLS.search(code):
         return []
     return [m for m in COMPANIONS if re.search(rf"^\s*(import|from)\s+{m}\b", code, re.M)]
 

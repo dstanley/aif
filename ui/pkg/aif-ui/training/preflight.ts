@@ -335,10 +335,13 @@ const TORCH_ONLY_IMAGES = ['dp.apps.rancher.io/containers/pytorch'];
 const COMPANIONS = ['torchvision', 'torchaudio', 'transformers', 'datasets', 'peft', 'accelerate', 'timm'];
 
 /** The packages `code` imports that a torch-only image does not have; [] for any other image. */
+const SELF_INSTALLS = /["'\s-]m["',\s]+(pip|ensurepip)\b|\bpip3? install\b/;
+
 export function missingPackages(image: string, code: string): string[] {
   const repo = (image || '').trim().toLowerCase().replace(/^docker\.io\//, '');
 
-  if (!TORCH_ONLY_IMAGES.includes(repo) || !code) {
+  // a script that installs its own packages (pip, or Python's bundled ensurepip) needs no warning
+  if (!TORCH_ONLY_IMAGES.includes(repo) || !code || SELF_INSTALLS.test(code)) {
     return [];
   }
 

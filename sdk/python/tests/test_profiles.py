@@ -114,3 +114,11 @@ def test_a_profile_s_purpose_is_the_category_of_its_runs():
     assert (test.purpose, plain.purpose, odd.purpose) == ("test", "training", "training")
     assert aijob_for("ns", "dev-a", {}, "smoke", "1.0", test.purpose)["spec"]["category"] == "test"
     assert aijob_for("ns", "dev-a", {}, "", "1.0")["spec"]["category"] == "training"
+
+
+def test_a_script_that_installs_its_own_packages_is_not_warned_about():
+    from rancher_ai.profiles import missing_packages
+    img = "dp.apps.rancher.io/containers/pytorch"
+    assert missing_packages(img, "import transformers\nimport peft\n") == ["transformers", "peft"]
+    assert missing_packages(img, 'subprocess.run([sys.executable, "-m", "pip", "install", "peft"])\nimport peft\n') == []
+    assert missing_packages(img, 'subprocess.run([sys.executable, "-m", "ensurepip", "--user"])\nimport transformers\n') == []
