@@ -75,6 +75,7 @@ Runs that feed each other carry, on their AIJobs:
 | annotation | `ai-factory.suse.com/parents` | the runs whose outputs it consumed, comma-separated |
 | annotation | `ai-factory.suse.com/inputs` | the inputs it was given: `{name: artifact}` |
 | annotation | `ai-factory.suse.com/inputs-hash` | the step's key: its profile, the values its run installs, the training chart version, a code ConfigMap's contents, and its inputs by content |
+| annotation | `ai-factory.suse.com/origin` | what submitted it, not part of the key: `{"kind": "kubeflow-pipeline", "name", "run", "runId", "task", "url"}` for a pipeline step |
 
 A run with the same key that succeeded, its outputs still there, can stand in for a new one. The
 chain is the AIJobs' labels and annotations, not an object of its own: AIJob stays the record of
@@ -83,5 +84,6 @@ between runs through them.
 
 ## In the UI
 
-"Artifacts" rather than "lineage": a run's detail lists what it used and produced, and for an input,
-the run that produced it.
+"Artifacts" rather than "lineage": a run's detail shows a Workflow row (what submitted it, linked
+when its URL is a web address; its chain and step; the runs it came after) and lists what it used
+and produced, where each is, its hash, and for an input the run that produced it.
