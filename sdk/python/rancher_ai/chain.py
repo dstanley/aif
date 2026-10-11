@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 CHAIN_LABEL = "ai-factory.suse.com/chain"
 STEP_LABEL = "ai-factory.suse.com/step"
 PARENTS_ANNOTATION = "ai-factory.suse.com/parents"
+# what submitted the run, for its record and the UI: {"kind": "kubeflow-pipeline", "name", "run",
+# "runId", "task", "url"} for a pipeline step; not part of the step's key
+ORIGIN_ANNOTATION = "ai-factory.suse.com/origin"
 INPUTS_ANNOTATION = "ai-factory.suse.com/inputs"
 HASH_ANNOTATION = "ai-factory.suse.com/inputs-hash"
 LABEL_VALUE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$")
@@ -92,10 +95,13 @@ def run_name(prefix: str, chain: str, step: str, suffix: str) -> str:
 
 
 class Chain:
-    def __init__(self, client: "Client", name: str, project: str | None = None):
+    def __init__(self, client: "Client", name: str, project: str | None = None, origin: dict | None = None):
+        """origin: what is running the chain, recorded on each run it starts (a Kubeflow pipeline run:
+        {"kind": "kubeflow-pipeline", "name": ..., "run": ..., "runId": ..., "task": ..., "url": ...})."""
         if not LABEL_VALUE.match(name):
             raise ChainError(f"chain name {name!r}: lowercase letters, numbers and hyphens, at most 32")
         self.c, self.name, self.project = client, name, project or client.project
+        self.origin = {k: str(v) for k, v in (origin or {}).items() if v not in (None, "")}
 
     def __repr__(self) -> str:
         return f"<Chain {self.name!r} project={self.project!r} steps={len(self.aijobs())}>"
@@ -137,6 +143,8 @@ class Chain:
             meta = {"labels": {CHAIN_LABEL: self.name, STEP_LABEL: step},
                     "annotations": {HASH_ANNOTATION: h, PARENTS_ANNOTATION: ",".join(parents),
                                     INPUTS_ANNOTATION: json.dumps({k: a.to_dict() for k, a in arts.items()}, separators=(",", ":"))}}
+            if self.origin:
+                meta["annotations"][ORIGIN_ANNOTATION] = json.dumps(self.origin, separators=(",", ":"))
             r = self.c.runs.create(profile, project=self.project, name=name, metadata=meta, **step_fields)
             r.cached = False
             say(f"{step}: started {r.name}" + (f" from {', '.join(parents)}" if parents else ""))

@@ -203,3 +203,9 @@ def test_a_consumers_inputs_are_recorded_where_they_are():
     assert [a.uri for a in arts] == ["volume://t1-checkpoints/t1/adapter", "hf-dataset://yahma/alpaca-cleaned@c0/a.json"]
     kept = json.loads(patched[0]["metadata"]["annotations"][ln.ARTIFACTS_ANNOTATION])
     assert kept[0]["uri"] == "volume://t1-checkpoints/t1/adapter" and kept[0]["sha256"] == "aa"
+
+
+def test_a_chain_records_what_is_running_it_but_not_in_the_steps_key():
+    c = ch.Chain(FakeClient([]), "c1", origin={"kind": "kubeflow-pipeline", "run": "lora-2", "runId": "732b", "url": "", "task": None})
+    assert c.origin == {"kind": "kubeflow-pipeline", "run": "lora-2", "runId": "732b"}
+    assert ch.inputs_hash("p", {}, {}) == ch.inputs_hash("p", {}, {})  # the origin is not an argument of the key

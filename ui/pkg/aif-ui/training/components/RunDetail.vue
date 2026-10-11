@@ -10,6 +10,7 @@ import { podRank, primaryPod } from '../pods';
 import { podRole, Run } from '../runs';
 import type { CheckpointVolume } from '../checkpoints';
 import { failureOf, parseResult, reportResult, RunFailure, RunResult } from '../results';
+import { originText, RunWorkflow, shortUri, workflowOf } from '../workflow';
 import { readPodLog } from '../podlog';
 import { describeLatest, isStarting, podEvents } from '../podevents';
 
@@ -53,6 +54,10 @@ export default defineComponent({
     // why the run failed or cannot start, from its AIJob: the only record when no pod ever existed
     failure(): RunFailure | null {
       return this.run.type === 'training' ? failureOf(this.run.obj) : null;
+    },
+    // what submitted the run (a pipeline), its chain and step, and what it consumed and produced
+    workflow(): RunWorkflow | null {
+      return this.run.type === 'training' ? workflowOf(this.run.obj) : null;
     },
     // the result the run's AIJob kept when it finished; it outlives the pods
     kept(): RunResult | null {
@@ -130,6 +135,14 @@ export default defineComponent({
 
     podRank(pod: any): string {
       return podRank(pod);
+    },
+
+    shortUri(uri: string): string {
+      return shortUri(uri);
+    },
+
+    originText(o: any): string {
+      return originText(o);
     },
 
     podRole(pod: any): string {
@@ -242,6 +255,76 @@ export default defineComponent({
         <div v-clean-tooltip="t0.image">
           <span class="tj-k">Image</span>{{ shortImage(t0.image) || '—' }}
         </div>
+      </div>
+      <!-- part of a workflow: what submitted it, its chain and step, what it used and produced -->
+      <div
+        v-if="workflow"
+        class="tj-workflow"
+      >
+        <div class="tj-pods-row">
+          <span class="tj-k">Workflow</span>
+          <template v-if="workflow.origin">
+            {{ originText(workflow.origin) }}<template v-if="workflow.origin.run">
+              , run
+              <a
+                v-if="workflow.origin.url"
+                :href="workflow.origin.url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ workflow.origin.run }}</a>
+              <span v-else>{{ workflow.origin.run }}</span>
+            </template><template v-if="workflow.origin.task">
+              , task <code>{{ workflow.origin.task }}</code>
+            </template>
+          </template>
+          <span
+            v-if="workflow.chain"
+            class="text-muted"
+          >{{ workflow.origin ? ' · ' : '' }}chain <code>{{ workflow.chain }}</code><template v-if="workflow.step">
+            , step <code>{{ workflow.step }}</code>
+          </template></span>
+          <span
+            v-if="workflow.parents.length"
+            class="text-muted"
+          > · after {{ workflow.parents.join(', ') }}</span>
+        </div>
+        <table
+          v-if="workflow.artifacts.length"
+          class="tj-artifacts"
+        >
+          <tr>
+            <th />
+            <th>Artifact</th>
+            <th>Kind</th>
+            <th>Where</th>
+            <th>SHA-256</th>
+            <th>From</th>
+          </tr>
+          <tr
+            v-for="a in workflow.artifacts"
+            :key="`${ a.direction }-${ a.name }`"
+          >
+            <td
+              class="text-muted"
+              :title="a.direction === 'input' ? 'consumed' : 'produced'"
+            >
+              {{ a.direction === 'input' ? 'in' : 'out' }}
+            </td>
+            <td>{{ a.name }}</td>
+            <td class="text-muted">
+              {{ a.kind }}
+            </td>
+            <td :title="a.uri">
+              <code>{{ shortUri(a.uri) }}</code>
+            </td>
+            <td :title="a.sha256">
+              <code v-if="a.sha256">{{ a.sha256.slice(0, 12) }}</code>
+            </td>
+            <td class="text-muted">
+              {{ a.producedBy }}
+            </td>
+          </tr>
+        </table>
       </div>
       <div
         v-if="checkpoint"
@@ -466,6 +549,13 @@ export default defineComponent({
 .tj-rank-menu { position: fixed; z-index: 100; min-width: 96px; background: var(--dropdown-bg, var(--body-bg)); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); padding: 3px 0; }
 .tj-rank-item { display: block; width: 100%; background: none; border: none; text-align: left; padding: 3px 10px; font-size: 12px; cursor: pointer;
   &:hover { background: var(--dropdown-hover-bg, var(--accent-btn)); } }
+.tj-workflow { margin-bottom: 8px; }
+.tj-artifacts {
+  margin: 4px 0 0; border-collapse: collapse; font-size: 12px;
+  th { text-align: left; font-weight: 500; color: var(--muted); padding: 2px 12px 2px 0; }
+  td { padding: 2px 12px 2px 0; vertical-align: top; }
+  code { font-size: 11px; word-break: break-all; }
+}
 .tj-failure {
   border: 1px solid var(--error); border-left-width: 4px; border-radius: 4px; padding: 8px 12px; margin-bottom: 12px;
   &.waiting { border-color: var(--warning); }

@@ -76,9 +76,10 @@ class Client:
             sharing = False if e.status == 404 else None
         return fit.fit(fit.needs_of(profile_type, values, requires, min_workers), fit.node_facts(nodes), sharing)
 
-    def chain(self, name: str, project: str | None = None) -> Chain:
-        """A chain of runs that feed each other, with lineage (see rancher_ai.chain)."""
-        return Chain(self, name, project)
+    def chain(self, name: str, project: str | None = None, origin: dict | None = None) -> Chain:
+        """A chain of runs that feed each other, with their artifacts (see rancher_ai.chain). origin:
+        what is running it (a pipeline run), recorded on each run it starts."""
+        return Chain(self, name, project, origin)
 
     def whoami(self) -> dict:
         return self.conn.whoami()
