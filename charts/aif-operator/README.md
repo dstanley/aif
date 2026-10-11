@@ -294,10 +294,14 @@ For example:
 
 | Name                                | Description    | Default |
 | ----------------------------------- | -------------- | ------- |
-| `manager.resources.requests.cpu`    | CPU request    | `10m`   |
-| `manager.resources.requests.memory` | Memory request | `64Mi`  |
-| `manager.resources.limits.cpu`      | CPU limit      | `500m`  |
-| `manager.resources.limits.memory`   | Memory limit   | `128Mi` |
+| `manager.resources.requests.cpu`    | CPU request    | `100m`  |
+| `manager.resources.requests.memory` | Memory request | `128Mi` |
+| `manager.resources.limits.cpu`      | CPU limit      | `1`     |
+| `manager.resources.limits.memory`   | Memory limit   | `512Mi` |
+
+The operator's memory grows with the cluster (about 140Mi with ~90 AIJobs). Held at a limit it
+needs, it spends its CPU collecting garbage, misses its probes and leader lease, and restarts; raise
+the limits for a cluster with thousands of runs.
 
 #### Probes
 
@@ -308,11 +312,14 @@ For example:
 | `manager.probes.liveness.httpGet.port`        | Liveness probe port   | `8081`     |
 | `manager.probes.liveness.periodSeconds`       | Probe period          | `20`       |
 | `manager.probes.liveness.initialDelaySeconds` | Initial delay         | `15`       |
+| `manager.probes.liveness.timeoutSeconds`      | Probe timeout         | `5`        |
+| `manager.probes.liveness.failureThreshold`    | Failures before restart | `6`      |
 | `manager.probes.readiness.enabled`             | Enable readiness probe | `true`    |
 | `manager.probes.readiness.httpGet.path`        | Readiness probe path   | `/readyz` |
 | `manager.probes.readiness.httpGet.port`        | Readiness probe port   | `8081`    |
 | `manager.probes.readiness.periodSeconds`       | Probe period           | `10`      |
 | `manager.probes.readiness.initialDelaySeconds` | Initial delay          | `5`       |
+| `manager.probes.readiness.timeoutSeconds`      | Probe timeout          | `5`       |
 
 #### Scheduling
 

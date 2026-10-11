@@ -167,14 +167,21 @@ manager:
             - ALL
     readOnlyRootFilesystem: true
 
+  # The operator watches AI Factory's resources and keeps every AIJob's record, so its memory grows
+  # with the cluster: about 140Mi on a lab cluster with ~90 AIJobs. Held at a limit it needs, it
+  # spends its CPU collecting garbage, answers its probes late and loses its leader lease, and
+  # restarts (on the lab: every 12 minutes, at 128Mi and 500m). The limits leave headroom; raise
+  # them for a cluster with thousands of runs.
   resources:
     limits:
-        cpu: 500m
-        memory: 128Mi
+        cpu: "1"
+        memory: 512Mi
     requests:
-        cpu: 10m
-        memory: 64Mi
+        cpu: 100m
+        memory: 128Mi
 
+  # A probe allows 5s (Kubernetes' default is 1s), and liveness 6 failures, so a busy moment
+  # (a resync after a restart) does not get the operator killed.
   probes:
     liveness:
       enabled: true
@@ -183,6 +190,8 @@ manager:
         port: 8081
       periodSeconds: 20
       initialDelaySeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 6
     readiness:
       enabled: true
       httpGet:
@@ -190,6 +199,7 @@ manager:
         port: 8081
       periodSeconds: 10
       initialDelaySeconds: 5
+      timeoutSeconds: 5
 
   nodeSelector: {}
   tolerations: []
