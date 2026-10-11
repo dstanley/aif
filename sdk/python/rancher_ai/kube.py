@@ -9,6 +9,8 @@ Factory UI would allow the same identity."""
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+import urllib.parse
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -90,16 +92,23 @@ class Connection:
     def call(self, method: str, path: str, body: Any = None, query: dict | None = None, headers: dict | None = None,
              raw: bool = False) -> Any:
         """A request with the connection's credentials; JSON in and out. Errors raise ApiException."""
+        # Built from what every client release has (the configuration's auth headers and the REST
+        # client's request): ApiClient.call_api changed its signature in kubernetes 31+.
+        cfg = self.api.configuration
         hdrs = {"Accept": "application/json", "Content-Type": "application/json", **(headers or {})}
-        resp = self.api.call_api(
-            path, method, query_params=list((query or {}).items()), header_params=hdrs, body=body,
-            auth_settings=["BearerToken"], _return_http_data_only=True, _preload_content=False,
-        )
-        # The generated client's own deserialisation differs between releases; read the bytes instead.
+        hdrs.update({a["key"]: a["value"] for a in cfg.auth_settings().values() if a.get("in") == "header" and a.get("value")})
+        url = cfg.host.rstrip("/") + path + (("&" if "?" in path else "?") + urllib.parse.urlencode(query) if query else "")
+        resp = self.api.rest_client.request(method, url, headers=hdrs, body=body, _request_timeout=600)
+        data = resp.read() if callable(getattr(resp, "read", None)) else None
+        data = data if data is not None else resp.data
+        status = getattr(resp, "status", 200)
+        text = data.decode(errors="replace") if isinstance(data, bytes) else str(data or "")
+        if not 200 <= status < 300:  # older releases raise this themselves; newer ones leave it to the caller
+            e = client.ApiException(status=status, reason=getattr(resp, "reason", ""))
+            e.body = text
+            raise e
         if raw:
-            return resp
-        data = resp.data if hasattr(resp, "data") else resp
-        text = data.decode() if isinstance(data, bytes) else str(data or "")
+            return SimpleNamespace(status=status, data=data if isinstance(data, bytes) else text.encode())
         try:
             return json.loads(text) if text else {}
         except ValueError:
