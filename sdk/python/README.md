@@ -424,6 +424,37 @@ adapters live in `/data/lora-adapters`. So an adapter is copied there, then load
 Only `adapter_config.json` and `adapter_model.safetensors` are needed; the tokenizer files the
 training script saves beside them are ignored.
 
+## Lineage and chains
+
+A run reports what it consumed and produced as `AIF_ARTIFACT` lines in its log, the way it reports
+its result with `AIF_RESULT`: a name, input or output, a URI (`checkpoints://<path>` on its own
+checkpoint volume, `volume://<pvc>/<path>`, `hf://<repo>@<commit>`, `hf-dataset://...`), and a SHA-256
+of the content (for a folder, of its files' paths and hashes: `rancher_ai.lineage.folder_sha256`).
+`run.artifacts()` reads them, `run.output(name)` and `run.input(name)` pick one, and a finished run's
+artifacts are kept on its AIJob (the `ai-factory.suse.com/artifacts` annotation), so they outlive its
+pods like its result.
+
+A **chain** runs steps that feed each other, from a notebook:
+
+```python
+chain = ai.chain("suse-lora-v2")
+train = chain.run("train", "shared-gpu-dev", script=train_py, env={"MODEL": "Qwen/Qwen2.5-0.5B-Instruct"})
+evals = chain.run("eval", "shared-gpu-dev", script=eval_py,
+                  inputs={"adapter": train.output("adapter"), "dataset": train.input("dataset")})
+chain.frame()     # one row per step: state, times, the runs it came from, its outputs and metrics
+chain.lineage()   # one row per artifact, and which run produced what a later one consumed
+```
+
+An input on a volume is mounted for the step as its dataset volume (read-only, `/mnt/dataset`) and
+handed over as `AIF_INPUT_<NAME>`, its path; any other input as its URI. A step whose profile,
+fields and inputs (by content) match a run that already succeeded in the chain is not run again,
+while that run's outputs are still there (`cache=False` runs it anyway). The chain is labels and
+annotations on its runs' AIJobs, so `ai.chain(name)` reads it back after a restart and
+`ai.chains.list()` lists a project's chains. Chains need the AIJob API.
+
+`aif-lab`'s `lora-distributed/lora-chain.ipynb` runs a train -> evaluate chain, and
+`lora-distributed/pipeline/` the same steps as a Kubeflow Pipeline whose steps call the chain.
+
 ## Current limitations
 
 The SDK enforces a profile's fields and limits itself, but does not yet run the cluster-side

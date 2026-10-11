@@ -268,7 +268,8 @@ def oci_tags(ref: str, insecure: bool = False, timeout: float = 20) -> list[str]
     return [t.replace("_", "+") for t in get(api, {"Authorization": f"Bearer {bearer}"}).get("tags") or []]
 
 
-def aijob_for(namespace: str, name: str, values: dict, profile: str, version: str, category: str = "training") -> dict:
+def aijob_for(namespace: str, name: str, values: dict, profile: str, version: str, category: str = "training",
+              metadata: dict | None = None) -> dict:
     """The AIJob for a run. Under an operator a chart's install-time capacity check is advice, not a
     gate: a busy cluster should queue the job, not fail it. The other pre-flight checks stay on."""
     v = dict(values or {})
@@ -276,7 +277,11 @@ def aijob_for(namespace: str, name: str, values: dict, profile: str, version: st
     spec = {"category": category or "training", "source": {"repoName": CHART_REPO, "chartName": CHART_NAME, "version": version}, "values": v}
     if profile:
         spec["profile"] = profile
-    return {"apiVersion": f"{AIJOB[0]}/{AIJOB[1]}", "kind": "AIJob", "metadata": {"name": name, "namespace": namespace}, "spec": spec}
+    md = {"name": name, "namespace": namespace}
+    for k in ("labels", "annotations"):
+        if (metadata or {}).get(k):
+            md[k] = dict(metadata[k])
+    return {"apiVersion": f"{AIJOB[0]}/{AIJOB[1]}", "kind": "AIJob", "metadata": md, "spec": spec}
 
 
 class AIJobInstaller:
@@ -285,8 +290,9 @@ class AIJobInstaller:
     def __init__(self, conn: Connection):
         self.conn = conn
 
-    def install(self, namespace: str, name: str, values: dict, profile: str, category: str = "training") -> dict:
-        job = aijob_for(namespace, name, values, profile, chart_version(self.conn), category)
+    def install(self, namespace: str, name: str, values: dict, profile: str, category: str = "training",
+                metadata: dict | None = None) -> dict:
+        job = aijob_for(namespace, name, values, profile, chart_version(self.conn), category, metadata)
         self.conn.custom.create_namespaced_custom_object(AIJOB[0], AIJOB[1], namespace, AIJOB[2], job)
         return {"aijob": name, "namespace": namespace}
 

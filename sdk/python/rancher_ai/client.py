@@ -23,6 +23,7 @@ from kubernetes import client as k8s
 from . import install, profiles as prof, workloads
 from .checkpoints import Checkpoints
 from .volumes import Volumes
+from .chain import Chain, Chains
 from .display import Table
 from .kube import Connection
 from .profiles import Profile, ProfileError
@@ -48,6 +49,7 @@ class Client:
         self.endpoints = Endpoints(self)
         self.checkpoints = Checkpoints(self)
         self.volumes = Volumes(self)
+        self.chains = Chains(self)
 
     @property
     def project(self) -> str:
@@ -73,6 +75,10 @@ class Client:
         except k8s.ApiException as e:
             sharing = False if e.status == 404 else None
         return fit.fit(fit.needs_of(profile_type, values, requires, min_workers), fit.node_facts(nodes), sharing)
+
+    def chain(self, name: str, project: str | None = None) -> Chain:
+        """A chain of runs that feed each other, with lineage (see rancher_ai.chain)."""
+        return Chain(self, name, project)
 
     def whoami(self) -> dict:
         return self.conn.whoami()
@@ -160,14 +166,16 @@ class Runs:
         self.c = c
 
     def create(self, profile: str, project: str | None = None, name: str | None = None, wait_for_job: float = 60,
-               dry_run: bool = False, demo: bool = False, check_fit: bool = True, **fields: Any) -> workloads.TrainingRun | dict:
+               dry_run: bool = False, demo: bool = False, check_fit: bool = True, metadata: dict | None = None,
+               **fields: Any) -> workloads.TrainingRun | dict:
         """Start a training run from a training profile. Fields are the ones the profile opens:
         image ("repo:tag"), workers, gpus_per_worker, command, args, script, env (dict), dataset, checkpoints,
         config_map, gpu_type, gpu_memory (GiB, shared GPU), runtime_hours, priority_class. When the
         profile lets you supply code, pass script= or config_map=, or demo=True for the chart's built-in
         all-reduce check. dry_run returns the values. A profile the cluster cannot run (its requires, a
         GPU share without KAI, more GPUs than a node has) is refused before anything is installed, as in
-        the UI; check_fit=False skips that."""
+        the UI; check_fit=False skips that. metadata ({"labels": ..., "annotations": ...}) is set on the
+        run's AIJob, and needs the AIJob API."""
         p = self.c.profiles.get(profile)
         if p.type != "training":
             raise ProfileError(f"{profile} is an inference profile; use endpoints.create")
@@ -203,7 +211,12 @@ class Runs:
             return values
         if self._exists(ns, name):
             raise ProfileError(f"{name} already exists in {ns}; choose another name")
-        self.c.installer.install(ns, name, values, p.name, p.purpose)
+        if metadata:
+            if not isinstance(self.c.installer, install.AIJobInstaller):
+                raise ProfileError("labels and annotations on a run need the AIJob API (AI Factory's operator)")
+            self.c.installer.install(ns, name, values, p.name, p.purpose, metadata=metadata)
+        else:
+            self.c.installer.install(ns, name, values, p.name, p.purpose)
         end = time.time() + wait_for_job
         while True:
             try:

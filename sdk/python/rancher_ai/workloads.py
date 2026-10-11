@@ -136,6 +136,27 @@ class TrainingRun:
     def delete(self) -> None:
         self.client.installer.uninstall(self.namespace, self.name)
 
+    def artifacts(self) -> list:
+        """What the run consumed and produced (rancher_ai.lineage): kept on its AIJob once it has
+        finished, else read from its log."""
+        from . import lineage
+        return lineage.artifacts_of(self.client, self.name, self.namespace)
+
+    def output(self, name: str):
+        """One artifact the run produced, by name: pass it as another run's input (a chain step)."""
+        outs = {a.name: a for a in self.artifacts() if a.direction == "output"}
+        if name not in outs:
+            raise LookupError(f"{self.name} reported no output {name!r}" + (f"; it has {', '.join(sorted(outs))}" if outs else
+                              " (a run reports its artifacts as AIF_ARTIFACT lines in its log)"))
+        return outs[name]
+
+    def input(self, name: str):
+        """One artifact the run consumed, by name (its dataset, its base model), as it recorded it."""
+        ins = {a.name: a for a in self.artifacts() if a.direction == "input"}
+        if name not in ins:
+            raise LookupError(f"{self.name} reported no input {name!r}" + (f"; it has {', '.join(sorted(ins))}" if ins else ""))
+        return ins[name]
+
     def result(self) -> dict | None:
         """What a test or benchmark run reported, as {test, status, checks, metrics, env}: the report its
         AIJob kept when it finished, else the last AIF_RESULT line of the first worker's log. None for a run
