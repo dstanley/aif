@@ -442,13 +442,17 @@ train = chain.run("train", "shared-gpu-dev", script=train_py, env={"MODEL": "Qwe
 evals = chain.run("eval", "shared-gpu-dev", script=eval_py,
                   inputs={"adapter": train.output("adapter"), "dataset": train.input("dataset")})
 chain.frame()     # one row per step: state, times, the runs it came from, its outputs and metrics
-chain.lineage()   # one row per artifact, and which run produced what a later one consumed
+chain.artifacts() # one row per artifact, and which run produced what a later one consumed
 ```
 
 An input on a volume is mounted for the step as its dataset volume (read-only, `/mnt/dataset`) and
 handed over as `AIF_INPUT_<NAME>`, its path; any other input as its URI. A step whose profile,
-fields and inputs (by content) match a run that already succeeded in the chain is not run again,
-while that run's outputs are still there (`cache=False` runs it anyway). The chain is labels and
+values (the profile as resolved with its fields: image, script, environment, seed), training chart
+version, code ConfigMap contents and inputs (by content) match a run that already succeeded in the
+chain is not run again, while that run's outputs are still there (`cache=False` runs it anyway); one
+that matches a run still under way waits for it, so a notebook restarted mid-chain does not start a
+step twice. A step's inputs are recorded where they are (`volume://...`), not where the step's pod
+saw them. The artifact format is specified in `docs/design/artifacts.md`. The chain is labels and
 annotations on its runs' AIJobs, so `ai.chain(name)` reads it back after a restart and
 `ai.chains.list()` lists a project's chains. Chains need the AIJob API.
 

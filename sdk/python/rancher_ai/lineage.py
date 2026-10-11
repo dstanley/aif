@@ -112,10 +112,12 @@ def stored(aijob: dict) -> list[Artifact] | None:
         return None
 
 
-def artifacts_of(c: "Client", name: str, project: str, capture: bool = True, finished: bool = False) -> list[Artifact]:
+def artifacts_of(c: "Client", name: str, project: str, capture: bool = True, finished: bool = False,
+                 portable: dict[str, str] | None = None) -> list[Artifact]:
     """A run's artifacts: those kept on its AIJob, else read from its log (and, for a finished run,
     kept on the AIJob from then on when capture). finished: the caller saw the run end (its Job
-    completes a few seconds before the operator moves the AIJob's phase on)."""
+    completes a few seconds before the operator moves the AIJob's phase on). portable maps a URI as the run
+reported it (file:// in its pod) to where that input is, for the record."""
     aj = c.conn.custom.get_namespaced_custom_object(*AIJOB[:2], project, AIJOB[2], name)
     have = stored(aj)
     if have is not None:
@@ -125,6 +127,9 @@ def artifacts_of(c: "Client", name: str, project: str, capture: bool = True, fin
     except LookupError:
         return []  # no pods any more, and nothing was kept
     found = [resolve(a, aj) for a in parse_artifacts(log, name, project)]
+    for a in found:  # an input the run saw at a path in its pod, recorded as where it is (portable)
+        if portable and a.direction == "input":
+            a.uri = portable.get(a.uri.rstrip("/"), a.uri)
     phase = (aj.get("status") or {}).get("phase", "")
     if capture and found and (finished or phase in ("Succeeded", "Failed", "Cancelled")):
         body = json.dumps([{k: v for k, v in a.to_dict().items() if k not in ("run", "project")} for a in found], separators=(",", ":"))

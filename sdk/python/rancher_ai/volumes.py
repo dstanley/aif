@@ -264,6 +264,50 @@ class Volumes:
             print(f"Copied {out['files']} files, {out['bytes'] >> 20} MiB, checksums match", flush=True)
         return out
 
+    def exists(self, volume: str, path: str, project: str | None = None, timeout: float = 240) -> bool:
+        """Whether `path` is on `volume`: a one-pod Job looks (on the node of a pod using the volume, if
+        one is), and reports through its log. False for a volume that does not exist."""
+        ns = project or self.c.project
+        core, batch = self.c.conn.core, self.c.conn.batch
+        try:
+            core.read_namespaced_persistent_volume_claim(volume, ns)
+        except client.ApiException as e:
+            if e.status == 404:
+                return False
+            raise
+        p = volume_path(path)
+        node = self._node_using(ns, {volume})
+        name = f"volume-exists-{int(time.time() * 1000) % 10000000}"
+        script = f'if [ -e {_sh_quote(p)} ]; then echo "{COPY_RESULT}yes"; else echo "{COPY_RESULT}no"; fi'
+        batch.create_namespaced_job(ns, client.V1Job(
+            metadata=client.V1ObjectMeta(name=name, namespace=ns, labels=COPY_LABEL),
+            spec=client.V1JobSpec(
+                backoff_limit=0, ttl_seconds_after_finished=120, active_deadline_seconds=int(timeout),
+                template=client.V1PodTemplateSpec(
+                    metadata=client.V1ObjectMeta(labels=COPY_LABEL),
+                    spec=client.V1PodSpec(
+                        restart_policy="Never", termination_grace_period_seconds=1,
+                        **({"node_selector": {"kubernetes.io/hostname": node}} if node else {}),
+                        containers=[client.V1Container(
+                            name="look", image=TOOLS_IMAGE, command=["sh", "-c", script],
+                            volume_mounts=[client.V1VolumeMount(name="data", mount_path="/data", read_only=True)],
+                            resources=client.V1ResourceRequirements(requests={"cpu": "50m", "memory": "16Mi"}, limits={"memory": "64Mi"}),
+                        )],
+                        volumes=[client.V1Volume(name="data", persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=volume, read_only=True))],
+                    ),
+                ),
+            ),
+        ))
+        try:
+            pod = self._wait_done(ns, name, volume, timeout)
+            log = core.read_namespaced_pod_log(pod, ns, container="look") or ""
+        finally:
+            try:
+                batch.delete_namespaced_job(name, ns, propagation_policy="Background")
+            except client.ApiException:
+                pass
+        return f"{COPY_RESULT}yes" in log
+
     def _node_using(self, ns: str, claims: set[str]) -> str | None:
         for p in self.c.conn.core.list_namespaced_pod(ns).items:
             if p.status.phase not in ("Running", "Pending") or not p.spec.node_name:

@@ -4,16 +4,20 @@
     train = chain.run("train", "shared-gpu-dev", script=train_py, env={...})
     evals = chain.run("eval", "shared-gpu-dev", script=eval_py, inputs={"adapter": train.output("adapter")})
     chain.frame()      # one row per step: state, times, metrics, what it consumed and produced
-    chain.lineage()    # one row per artifact, and which step produced what another consumed
+    chain.artifacts()  # one row per artifact, and which step produced what another consumed
 
 A chain is labels on its runs' AIJobs (ai-factory.suse.com/chain and /step) and annotations (the
 parent runs, the inputs, their hash), so it lives in the cluster, not the notebook: ai.chain(name)
 picks it up again after a restart, and the AI Jobs view can find a run's chain.
 
 An input on a volume is mounted for the step as its dataset volume (read-only, at /mnt/dataset) and
-handed to the script as AIF_INPUT_<NAME>, the path to it; one volume per step. A step whose profile,
-fields and inputs hash to those of a run that already succeeded in the chain is not run again: run()
-returns that run (cache=False runs it anyway), unless one of its outputs' volumes is gone.
+handed to the script as AIF_INPUT_<NAME>, the path to it; one volume per step. A step is keyed by
+the values its run would install (the profile as resolved with its fields), the training chart's
+version, a code ConfigMap's contents and its inputs by content. A step whose key matches a run that
+already succeeded in the chain is not run again: run() returns that run (cache=False runs it anyway),
+unless one of its outputs is gone. One that matches a run still under way waits for it, so a
+notebook restarted mid-chain picks up where it was rather than starting the step twice. Carrying
+on with no notebook at all is a workflow engine's job (Kubeflow Pipelines; see aif-lab).
 
 A chain needs the AIJob API (AI Factory's operator), which keeps the runs' records and artifacts.
 """
@@ -47,10 +51,13 @@ class ChainError(RuntimeError):
     pass
 
 
-def inputs_hash(profile: str, fields: dict, inputs: dict[str, lineage.Artifact]) -> str:
-    """What makes a step the same step: its profile, the fields it was given (a script by its text),
-    and its inputs by content (their SHA-256, else where they are)."""
-    doc = {"profile": profile, "fields": fields,
+def inputs_hash(profile: str, values: dict, inputs: dict[str, lineage.Artifact], extra: dict | None = None) -> str:
+    """What makes a step the same step: its profile, the values the run would install (the profile's
+    as resolved with the step's fields, so its image, script, environment and seed all count, and a
+    profile edited since changes the key), anything those values only name (extra: the training
+    chart's version, a code ConfigMap's contents), and its inputs by content (their SHA-256, else
+    where they are)."""
+    doc = {"profile": profile, "values": values, "extra": extra or {},
            "inputs": {k: (a.sha256 or a.uri) for k, a in sorted(inputs.items())}}
     return hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -106,26 +113,33 @@ class Chain:
             raise ChainError("a chain needs the AIJob API (AI Factory's operator) on the cluster")
         arts = {k: (v if isinstance(v, lineage.Artifact) else lineage.Artifact(name=k, direction="input", uri=str(v)))
                 for k, v in (inputs or {}).items()}
-        h = inputs_hash(profile, fields, arts)
+        step_fields = input_fields(arts, fields)
+        # the key: the values the run would install, as runs.create resolves them, and what they name
+        values = self.c.runs.create(profile, project=self.project, dry_run=True, **step_fields)
+        h = inputs_hash(profile, values, arts, self._named(values))
         say = (lambda *a: None) if quiet else print
-        if cache:
-            hit = self._cached(step, h)
-            if hit:
-                say(f"{step}: unchanged since {hit.name}, which succeeded; using it (cache=False runs it again)")
-                hit.cached = True
-                return hit
-        p = self.c.profiles.get(profile)
-        from .client import _suffix
-        name = run_name(p.name_prefix, self.name, step, _suffix())
-        if not NAME_RE.match(name):
-            raise ChainError(f"cannot make a valid run name from chain {self.name!r} and step {step!r}")
-        parents = sorted({a.run for a in arts.values() if a.run})
-        meta = {"labels": {CHAIN_LABEL: self.name, STEP_LABEL: step},
-                "annotations": {HASH_ANNOTATION: h, PARENTS_ANNOTATION: ",".join(parents),
-                                INPUTS_ANNOTATION: json.dumps({k: a.to_dict() for k, a in arts.items()}, separators=(",", ":"))}}
-        r = self.c.runs.create(profile, project=self.project, name=name, metadata=meta, **input_fields(arts, fields))
-        r.cached = False
-        say(f"{step}: started {r.name}" + (f" from {', '.join(parents)}" if parents else ""))
+        # an identical step already under way is waited on, not started again (a notebook restarted mid-chain)
+        r = self._in_flight(step, h)
+        if r is not None:
+            say(f"{step}: {r.name} is already {r.state.lower()} with the same inputs; waiting for it")
+            r.cached = False
+        elif cache and (hit := self._cached(step, h)) is not None:
+            say(f"{step}: unchanged since {hit.name}, which succeeded; using it (cache=False runs it again)")
+            hit.cached = True
+            return hit
+        else:
+            p = self.c.profiles.get(profile)
+            from .client import _suffix
+            name = run_name(p.name_prefix, self.name, step, _suffix())
+            if not NAME_RE.match(name):
+                raise ChainError(f"cannot make a valid run name from chain {self.name!r} and step {step!r}")
+            parents = sorted({a.run for a in arts.values() if a.run})
+            meta = {"labels": {CHAIN_LABEL: self.name, STEP_LABEL: step},
+                    "annotations": {HASH_ANNOTATION: h, PARENTS_ANNOTATION: ",".join(parents),
+                                    INPUTS_ANNOTATION: json.dumps({k: a.to_dict() for k, a in arts.items()}, separators=(",", ":"))}}
+            r = self.c.runs.create(profile, project=self.project, name=name, metadata=meta, **step_fields)
+            r.cached = False
+            say(f"{step}: started {r.name}" + (f" from {', '.join(parents)}" if parents else ""))
         if not wait:
             return r
         state = r.wait(timeout=timeout)
@@ -133,18 +147,47 @@ class Chain:
         if state != "Completed":
             res = (aj.get("status") or {}).get("result") or {}
             raise ChainError(f"{step}: {r.name} {state.lower()}" + (f": {res.get('reason', '')} {res.get('message', '')}".rstrip() if res else ""))
-        outs = [a for a in lineage.artifacts_of(self.c, r.name, self.project, finished=True) if a.direction == "output"]
+        # the step reports its inputs where it saw them (a path in its pod); the record keeps where they are
+        local = {f"file://{INPUT_MOUNT}/{a.volume_path[1]}": a.uri for a in arts.values() if a.volume_path}
+        outs = [a for a in lineage.artifacts_of(self.c, r.name, self.project, finished=True, portable=local) if a.direction == "output"]
         say(f"{step}: {r.name} succeeded" + (f"; outputs: {', '.join(a.name for a in outs)}" if outs else ""))
         return r
+
+    def _named(self, values: dict) -> dict:
+        """What the values only name, by content: the training chart version, and a code ConfigMap."""
+        from . import install
+        extra = {}
+        try:
+            extra["chart"] = install.chart_version(self.c.conn)
+        except Exception:
+            pass
+        cm = (values.get("storage") or {}).get("configMap")
+        if cm:
+            try:
+                obj = self.c.conn.core.read_namespaced_config_map(cm, self.project)
+                extra["configMap"] = hashlib.sha256(json.dumps([obj.data or {}, obj.binary_data or {}], sort_keys=True).encode()).hexdigest()
+            except Exception:
+                extra["configMap"] = cm
+        return extra
+
+    def _in_flight(self, step: str, h: str) -> "TrainingRun | None":
+        for aj in reversed(self.aijobs(step)):
+            if (aj["metadata"].get("annotations") or {}).get(HASH_ANNOTATION) == h and \
+                    (aj.get("status") or {}).get("phase", "Pending") in ("Pending", "Queued", "Admitted", "Running"):
+                return self.c.runs.get(aj["metadata"]["name"], self.project)
+        return None
 
     def _cached(self, step: str, h: str) -> "TrainingRun | None":
         for aj in reversed(self.aijobs(step)):
             md = aj["metadata"]
             if (md.get("annotations") or {}).get(HASH_ANNOTATION) != h or (aj.get("status") or {}).get("phase") != "Succeeded":
                 continue
-            outs = [a for a in (lineage.stored(aj) or []) if a.direction == "output"]
-            if any(a.volume_path and not self._volume_exists(a.volume_path[0]) for a in outs):
-                continue  # its outputs are gone: run it again
+            outs = [a for a in (lineage.stored(aj) or []) if a.direction == "output" and a.volume_path]
+            # its outputs must still be there: the volume, and the path on it
+            if any(not self._volume_exists(a.volume_path[0]) for a in outs):
+                continue
+            if any(not self.c.volumes.exists(*a.volume_path, project=self.project) for a in outs):
+                continue
             return self.c.runs.get(md["name"], self.project)
         return None
 
@@ -183,7 +226,7 @@ class Chain:
         cols = list(dict.fromkeys(k for r in rows for k in r)) or ["step", "run", "state"]
         return _table(rows, cols, as_frame)
 
-    def lineage(self, as_frame: bool | None = None):
+    def artifacts(self, as_frame: bool | None = None):
         """One row per artifact a run in the chain reported: which step consumed or produced it, its
         content hash, and for an input the run in the chain that produced it (matched by content)."""
         rows, made = [], {}

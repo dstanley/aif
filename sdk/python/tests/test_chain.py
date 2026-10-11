@@ -61,14 +61,20 @@ def test_inputs_on_a_volume_are_mounted_and_handed_over_by_path():
         ch.input_fields({"a": adapter}, {"dataset": "mine"})
 
 
-def test_a_step_is_the_same_step_by_profile_fields_and_input_content():
+def test_a_step_is_the_same_step_by_its_values_what_they_name_and_input_content():
     a = ln.Artifact("adapter", "output", "volume://v1/x", sha256="aa")
     same_content_elsewhere = ln.Artifact("adapter", "output", "volume://v2/y", sha256="aa")
-    h = ch.inputs_hash("shared-gpu-dev", {"script": "print(1)", "env": {"A": "1"}}, {"adapter": a})
-    assert h == ch.inputs_hash("shared-gpu-dev", {"env": {"A": "1"}, "script": "print(1)"}, {"adapter": same_content_elsewhere})
-    assert h != ch.inputs_hash("shared-gpu-dev", {"script": "print(2)", "env": {"A": "1"}}, {"adapter": a})
-    assert h != ch.inputs_hash("shared-gpu-dev", {"script": "print(1)", "env": {"A": "1"}},
-                               {"adapter": ln.Artifact("adapter", "output", "volume://v1/x", sha256="bb")})
+    values = {"image": {"repository": "dp.apps.rancher.io/containers/pytorch", "tag": "2.14.0-nvidia-2.1"},
+              "job": {"script": "print(1)"}, "env": [{"name": "SEED", "value": "1"}]}
+    extra = {"chart": "2.3.0-training.12"}
+    h = ch.inputs_hash("shared-gpu-dev", values, {"adapter": a}, extra)
+    assert h == ch.inputs_hash("shared-gpu-dev", dict(reversed(list(values.items()))), {"adapter": same_content_elsewhere}, extra)
+    # a profile edited to a new image, a new seed, a new chart, new input content: each a new step
+    for v, e, i in (({**values, "image": {"repository": "dp.apps.rancher.io/containers/pytorch", "tag": "2.15.0"}}, extra, a),
+                    ({**values, "env": [{"name": "SEED", "value": "2"}]}, extra, a),
+                    (values, {"chart": "2.3.0-training.13"}, a),
+                    (values, extra, ln.Artifact("adapter", "output", "volume://v1/x", sha256="bb"))):
+        assert h != ch.inputs_hash("shared-gpu-dev", v, {"adapter": i}, e)
 
 
 def test_run_names_fit_and_keep_the_profiles_prefix():
@@ -124,7 +130,7 @@ def test_the_chain_reads_back_its_steps_and_which_step_fed_which():
     assert [r["step"] for r in f.rows] == ["train", "eval"]
     assert f.rows[0]["minutes"] == 12.5 and f.rows[0]["tokens_per_s"] == 812.5 and f.rows[0]["gpus"] == 1
     assert f.rows[1]["from"] == "a-train" and f.rows[0]["outputs"] == "adapter"
-    lin = c.lineage(as_frame=False)
+    lin = c.artifacts(as_frame=False)
     eval_in = next(r for r in lin.rows if r["run"] == "b-eval")
     assert eval_in["produced_by"] == "a-train"
 
@@ -132,3 +138,68 @@ def test_the_chain_reads_back_its_steps_and_which_step_fed_which():
 def test_names_a_chain_label_can_hold():
     with pytest.raises(ch.ChainError):
         ch.Chain(FakeClient([]), "Not_A_Label")
+
+
+class FakeRuns:
+    def __init__(self):
+        self.got = []
+
+    def get(self, name, project=None):
+        self.got.append(name)
+        from types import SimpleNamespace
+        return SimpleNamespace(name=name, state="Running")
+
+
+class FakeVolumes:
+    def __init__(self, present):
+        self.present = present
+
+    def exists(self, volume, path, project=None):
+        return (volume, path) in self.present
+
+
+class FakeChainClient(FakeClient):
+    def __init__(self, items, present=()):
+        super().__init__(items)
+        self.runs, self.volumes = FakeRuns(), FakeVolumes(set(present))
+        self.conn.core = self
+
+    def read_namespaced_persistent_volume_claim(self, name, ns):
+        return name
+
+
+def test_a_step_under_way_is_waited_on_and_a_cached_one_needs_its_outputs_there():
+    out = [{"name": "adapter", "direction": "output", "uri": "volume://t1-checkpoints/t1/adapter", "sha256": "aa"}]
+    running = aijob("t2-train", "train", "Running", [], h="h1")
+    done = aijob("t1-train", "train", "Succeeded", out, h="h1")
+    c = ch.Chain(FakeChainClient([done, running]), "c1")
+    assert c._in_flight("train", "h1").name == "t2-train"
+    assert c._in_flight("train", "other") is None
+    c = ch.Chain(FakeChainClient([done], present=[("t1-checkpoints", "t1/adapter")]), "c1")
+    assert c._cached("train", "h1").name == "t1-train"
+    c = ch.Chain(FakeChainClient([done], present=[]), "c1")
+    assert c._cached("train", "h1") is None  # the volume is there, the adapter on it is not
+
+
+def test_a_consumers_inputs_are_recorded_where_they_are():
+    from types import SimpleNamespace
+    log = "\n".join([
+        'AIF_ARTIFACT {"direction":"input","name":"adapter","kind":"model","uri":"file:///mnt/dataset/t1/adapter/","sha256":"aa"}',
+        'AIF_ARTIFACT {"direction":"input","name":"dataset","kind":"dataset","uri":"hf-dataset://yahma/alpaca-cleaned@c0/a.json"}',
+    ])
+    patched = []
+
+    class Custom:
+        def get_namespaced_custom_object(self, *a):
+            return {"metadata": {"name": "e1", "namespace": "p"}, "spec": {"values": {}}, "status": {"phase": "Running"}}
+
+        def patch_namespaced_custom_object(self, *a):
+            patched.append(a[-1])
+
+    c = SimpleNamespace(conn=SimpleNamespace(custom=Custom()),
+                        runs=SimpleNamespace(get=lambda n, p: SimpleNamespace(logs=lambda **k: log)))
+    arts = ln.artifacts_of(c, "e1", "p", finished=True,
+                           portable={"file:///mnt/dataset/t1/adapter": "volume://t1-checkpoints/t1/adapter"})
+    assert [a.uri for a in arts] == ["volume://t1-checkpoints/t1/adapter", "hf-dataset://yahma/alpaca-cleaned@c0/a.json"]
+    kept = json.loads(patched[0]["metadata"]["annotations"][ln.ARTIFACTS_ANNOTATION])
+    assert kept[0]["uri"] == "volume://t1-checkpoints/t1/adapter" and kept[0]["sha256"] == "aa"
