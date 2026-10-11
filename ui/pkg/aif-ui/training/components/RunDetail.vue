@@ -10,7 +10,10 @@ import { podRank, primaryPod } from '../pods';
 import { podRole, Run } from '../runs';
 import type { CheckpointVolume } from '../checkpoints';
 import { failureOf, parseResult, reportResult, RunFailure, RunResult } from '../results';
-import { originText, RunWorkflow, shortUri, workflowOf } from '../workflow';
+import {
+  CHAIN_LABEL, duration, originText, RunTiming, RunWorkflow, shortUri, StepItem, stepsOf, timingOf, workflowOf
+} from '../workflow';
+import { ago } from '../runs';
 import { readPodLog } from '../podlog';
 import { describeLatest, isStarting, podEvents } from '../podevents';
 
@@ -29,6 +32,8 @@ export default defineComponent({
       // what each pod that has not started yet is doing: its newest event
       setup:    {} as Record<string, { text: string; warning: boolean }>,
       setupTimer: null as ReturnType<typeof setInterval> | null,
+      // the other runs of this run's chain, for the step strip (read when the panel opens)
+      chainJobs:  [] as any[],
     };
   },
 
@@ -59,6 +64,16 @@ export default defineComponent({
     workflow(): RunWorkflow | null {
       return this.run.type === 'training' ? workflowOf(this.run.obj) : null;
     },
+    chainKey(): string {
+      return this.workflow?.chain ? `${ this.run.obj?.metadata?.namespace }/${ this.workflow.chain }` : '';
+    },
+    // the run's path through its chain: the runs it came after, it, and those after it
+    steps(): StepItem[] {
+      return this.workflow?.chain ? stepsOf(this.run.obj, this.chainJobs) : [];
+    },
+    timing(): RunTiming | null {
+      return this.run.type === 'training' ? timingOf(this.run.obj) : null;
+    },
     // the result the run's AIJob kept when it finished; it outlives the pods
     kept(): RunResult | null {
       return reportResult(this.run.obj); // only an AIJob has status.report
@@ -70,6 +85,7 @@ export default defineComponent({
     // and again when the run moves on (its pod finishes)
     logsKey: { immediate: true, handler() { this.loadResult(); } },
     startingKey: { immediate: true, handler(key: string) { this.watchSetup(!!key); } },
+    chainKey:    { immediate: true, handler() { this.loadChain(); } },
   },
 
   beforeUnmount() {
@@ -131,6 +147,39 @@ export default defineComponent({
       } catch (e) {
         this.result = null; // no log to read (the pod is gone, or logs are not readable here)
       }
+    },
+
+    async loadChain() {
+      if (!this.chainKey) {
+        this.chainJobs = [];
+
+        return;
+      }
+      const cluster = encodeURIComponent(String(this.$route.params.cluster || 'local'));
+      const ns = encodeURIComponent(this.run.obj.metadata.namespace);
+      const sel = encodeURIComponent(`${ CHAIN_LABEL }=${ this.workflow?.chain }`);
+
+      try {
+        const res = await this.$store.dispatch('cluster/request', { url: `/k8s/clusters/${ cluster }/apis/ai-factory.suse.com/v1alpha1/namespaces/${ ns }/aijobs?labelSelector=${ sel }` });
+
+        this.chainJobs = res?.items || res?.data?.items || [];
+      } catch (e) {
+        this.chainJobs = []; // the strip shows the run alone
+      }
+    },
+
+    ago(iso: string): string {
+      return ago(iso);
+    },
+
+    duration(s: number | null): string {
+      return duration(s);
+    },
+
+    stepIcon(phase: string): string {
+      return ({
+        Succeeded: 'icon-checkmark text-success', Failed: 'icon-x text-error', Cancelled: 'icon-x text-muted', Running: 'icon-spinner icon-spin text-info'
+      } as Record<string, string>)[phase] || 'icon-dot-open text-muted';
     },
 
     podRank(pod: any): string {
@@ -256,136 +305,59 @@ export default defineComponent({
           <span class="tj-k">Image</span>{{ shortImage(t0.image) || '—' }}
         </div>
       </div>
-      <!-- part of a workflow: what submitted it, its chain and step, what it used and produced -->
+      <!-- part of a workflow: what submitted it, its chain, the steps around it, when it ran -->
       <div
         v-if="workflow"
-        class="tj-workflow"
-      >
-        <div class="tj-pods-row">
-          <span class="tj-k">Workflow</span>
-          <template v-if="workflow.origin">
-            {{ originText(workflow.origin) }}<template v-if="workflow.origin.run">
-              , run
-              <a
-                v-if="workflow.origin.url"
-                :href="workflow.origin.url"
-                target="_blank"
-                rel="noopener noreferrer"
-              >{{ workflow.origin.run }}</a>
-              <span v-else>{{ workflow.origin.run }}</span>
-            </template><template v-if="workflow.origin.task">
-              , task <code>{{ workflow.origin.task }}</code>
-            </template>
-          </template>
-          <span
-            v-if="workflow.chain"
-            class="text-muted"
-          >{{ workflow.origin ? ' · ' : '' }}chain <code>{{ workflow.chain }}</code><template v-if="workflow.step">
-            , step <code>{{ workflow.step }}</code>
-          </template></span>
-          <span
-            v-if="workflow.parents.length"
-            class="text-muted"
-          > · after {{ workflow.parents.join(', ') }}</span>
-        </div>
-        <table
-          v-if="workflow.artifacts.length"
-          class="tj-artifacts"
-        >
-          <tr>
-            <th />
-            <th>Artifact</th>
-            <th>Kind</th>
-            <th>Where</th>
-            <th>SHA-256</th>
-            <th>From</th>
-          </tr>
-          <tr
-            v-for="a in workflow.artifacts"
-            :key="`${ a.direction }-${ a.name }`"
-          >
-            <td
-              class="text-muted"
-              :title="a.direction === 'input' ? 'consumed' : 'produced'"
-            >
-              {{ a.direction === 'input' ? 'in' : 'out' }}
-            </td>
-            <td>{{ a.name }}</td>
-            <td class="text-muted">
-              {{ a.kind }}
-            </td>
-            <td :title="a.uri">
-              <code>{{ shortUri(a.uri) }}</code>
-            </td>
-            <td :title="a.sha256">
-              <code v-if="a.sha256">{{ a.sha256.slice(0, 12) }}</code>
-            </td>
-            <td class="text-muted">
-              {{ a.producedBy }}
-            </td>
-          </tr>
-        </table>
-      </div>
-      <div
-        v-if="checkpoint"
         class="tj-pods-row"
       >
-        <span class="tj-k">Checkpoint volume</span>
-        {{ checkpoint.name }} · {{ checkpoint.size }}<template v-if="checkpoint.storageClass">
-          · {{ checkpoint.storageClass }}
+        <span class="tj-k">Workflow</span>
+        <template v-if="workflow.origin">
+          {{ originText(workflow.origin) }}<template v-if="workflow.origin.run">
+            , run&nbsp;<a
+              v-if="workflow.origin.url"
+              :href="workflow.origin.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ workflow.origin.run }}</a>
+            <span v-else>{{ workflow.origin.run }}</span>
+          </template>
         </template>
-        <span class="text-muted">&nbsp;· kept after the run</span>
-        <button
-          class="btn role-tertiary btn-sm tj-copy"
-          type="button"
-          :disabled="checkpoint.inUseBy.length > 0"
-          :title="checkpoint.inUseBy.length ? `In use by ${ checkpoint.inUseBy.join(', ') }: look from that pod instead` : 'List the files on the volume, and download them'"
-          :aria-expanded="browsing"
-          @click="browsing = !browsing"
-        >
-          <i :class="['icon', browsing ? 'icon-chevron-up' : 'icon-folder']" /> {{ browsing ? 'Hide files' : 'Browse files' }}
-        </button>
-        <button
-          class="btn role-tertiary btn-sm"
-          :disabled="checkpoint.runActive || checkpoint.inUseBy.length > 0 || !!checkpoint.heldBy?.length"
-          :title="checkpoint.runActive ? 'The run is still active' : checkpoint.inUseBy.length ? `In use by ${ checkpoint.inUseBy.join(', ') }` : checkpoint.heldBy?.length ? `Kept until the run is cleaned up: ${ checkpoint.heldBy.join(', ') } finished but still names it` : 'Delete the volume and its data'"
-          @click="$emit('remove-checkpoint', checkpoint)"
-        >
-          <i class="icon icon-delete" /> Delete volume
-        </button>
-      </div>
-      <VolumeFiles
-        v-if="checkpoint && browsing"
-        :checkpoint="checkpoint"
-      />
-      <div class="tj-pods-row">
-        <span class="tj-k">Pods</span>
         <span
-          v-if="!run.pods.length"
+          v-if="workflow.chain"
           class="text-muted"
-        >none</span>
-        <router-link
-          v-for="p in run.pods"
-          :key="p.id"
-          :to="p.detailLocation"
-          class="tj-rank"
-          :title="`${ p.metadata.name }: ${ podPhase(p) }`"
-        >
-          <BadgeState
-            :color="phaseClass(podPhase(p))"
-            :label="podRank(p)"
-          />
-        </router-link>
+        >{{ workflow.origin ? '&nbsp;· ' : '' }}chain <code>{{ workflow.chain }}</code></span>
       </div>
       <div
-        v-for="p in startingPods"
-        v-show="setup[p.metadata.name]"
-        :key="`setup-${ p.metadata.name }`"
-        :class="['tj-setup', { 'text-warning': setup[p.metadata.name] && setup[p.metadata.name].warning }]"
+        v-if="steps.length"
+        class="tj-pods-row tj-steps"
       >
-        <i :class="['icon', setup[p.metadata.name] && setup[p.metadata.name].warning ? 'icon-warning' : 'icon-spinner icon-spin']" />
-        <span class="text-muted">{{ podRank(p) }}</span>
-        {{ setup[p.metadata.name] && setup[p.metadata.name].text }}
+        <span class="tj-k">Steps</span>
+        <template
+          v-for="(st, i) in steps"
+          :key="st.name"
+        >
+          <span
+            v-if="i"
+            class="tj-step-line"
+          />
+          <span
+            :class="['tj-step', { current: st.current }]"
+            :title="`${ st.name }: ${ st.phase }`"
+          >
+            <i :class="['icon', stepIcon(st.phase)]" /> {{ st.step || st.name }}<span
+              v-if="st.current && steps.length > 1"
+              class="text-muted"
+            >&nbsp;({{ i + 1 }}/{{ steps.length }})</span>
+          </span>
+        </template>
+      </div>
+      <div
+        v-if="timing"
+        class="tj-pods-row"
+      >
+        <span class="tj-k">Started</span>{{ timing.started ? ago(timing.started) : '—' }}
+        <span class="tj-k tj-k-next">Completed</span>{{ timing.completed ? ago(timing.completed) : '—' }}
+        <span class="tj-k tj-k-next">Duration</span>{{ duration(timing.seconds) }}
       </div>
     </template>
 
@@ -475,6 +447,125 @@ export default defineComponent({
       </dl>
     </section>
 
+    <!-- what the run used and produced, then where its outputs are kept, then its pods -->
+    <template v-if="run.type === 'training' && t0">
+      <section
+        v-if="workflow && workflow.artifacts.length"
+        class="tj-section"
+      >
+        <h4>Artifacts</h4>
+        <table class="tj-artifacts">
+          <tr>
+            <th />
+            <th>Artifact</th>
+            <th>Where</th>
+            <th>SHA-256</th>
+            <th>From</th>
+          </tr>
+          <tr
+            v-for="a in workflow.artifacts"
+            :key="`${ a.direction }-${ a.name }`"
+          >
+            <td
+              class="text-muted"
+              :title="a.direction === 'input' ? 'consumed' : 'produced'"
+            >
+              {{ a.direction === 'input' ? 'in' : 'out' }}
+            </td>
+            <td>{{ a.name }}</td>
+            <td>
+              <code
+                class="tj-ellipsis"
+                :title="a.uri"
+              >{{ shortUri(a.uri) }}</code>
+            </td>
+            <td class="tj-nowrap">
+              <template v-if="a.sha256">
+                <code :title="a.sha256">{{ a.sha256.slice(0, 12) }}</code>
+                <button
+                  class="btn role-link btn-sm tj-copy-hash"
+                  type="button"
+                  title="Copy the SHA-256"
+                  aria-label="Copy the SHA-256"
+                  @click="$emit('copy', a.sha256)"
+                >
+                  <i class="icon icon-copy" />
+                </button>
+              </template>
+              <span
+                v-else
+                class="text-muted"
+              >—</span>
+            </td>
+            <td class="text-muted">
+              {{ a.producedBy }}
+            </td>
+          </tr>
+        </table>
+      </section>
+      <div
+        v-if="checkpoint"
+        class="tj-pods-row"
+      >
+        <span class="tj-k">Checkpoint volume</span>
+        {{ checkpoint.name }} · {{ checkpoint.size }}<template v-if="checkpoint.storageClass">
+          · {{ checkpoint.storageClass }}
+        </template>
+        <span class="text-muted">&nbsp;· kept after the run</span>
+        <button
+          class="btn role-tertiary btn-sm tj-copy"
+          type="button"
+          :disabled="checkpoint.inUseBy.length > 0"
+          :title="checkpoint.inUseBy.length ? `In use by ${ checkpoint.inUseBy.join(', ') }: look from that pod instead` : 'List the files on the volume, and download them'"
+          :aria-expanded="browsing"
+          @click="browsing = !browsing"
+        >
+          <i :class="['icon', browsing ? 'icon-chevron-up' : 'icon-folder']" /> {{ browsing ? 'Hide files' : 'Browse files' }}
+        </button>
+        <button
+          class="btn role-tertiary btn-sm"
+          :disabled="checkpoint.runActive || checkpoint.inUseBy.length > 0 || !!checkpoint.heldBy?.length"
+          :title="checkpoint.runActive ? 'The run is still active' : checkpoint.inUseBy.length ? `In use by ${ checkpoint.inUseBy.join(', ') }` : checkpoint.heldBy?.length ? `Kept until the run is cleaned up: ${ checkpoint.heldBy.join(', ') } finished but still names it` : 'Delete the volume and its data'"
+          @click="$emit('remove-checkpoint', checkpoint)"
+        >
+          <i class="icon icon-delete" /> Delete volume
+        </button>
+      </div>
+      <VolumeFiles
+        v-if="checkpoint && browsing"
+        :checkpoint="checkpoint"
+      />
+      <div class="tj-pods-row">
+        <span class="tj-k">Pods</span>
+        <span
+          v-if="!run.pods.length"
+          class="text-muted"
+        >none</span>
+        <router-link
+          v-for="p in run.pods"
+          :key="p.id"
+          :to="p.detailLocation"
+          class="tj-rank"
+          :title="`${ p.metadata.name }: ${ podPhase(p) }`"
+        >
+          <BadgeState
+            :color="phaseClass(podPhase(p))"
+            :label="podRank(p)"
+          />
+        </router-link>
+      </div>
+      <div
+        v-for="p in startingPods"
+        v-show="setup[p.metadata.name]"
+        :key="`setup-${ p.metadata.name }`"
+        :class="['tj-setup', { 'text-warning': setup[p.metadata.name] && setup[p.metadata.name].warning }]"
+      >
+        <i :class="['icon', setup[p.metadata.name] && setup[p.metadata.name].warning ? 'icon-warning' : 'icon-spinner icon-spin']" />
+        <span class="text-muted">{{ podRank(p) }}</span>
+        {{ setup[p.metadata.name] && setup[p.metadata.name].text }}
+      </div>
+    </template>
+
     <div class="tj-buttons">
       <div
         v-if="run.type === 'training'"
@@ -549,13 +640,21 @@ export default defineComponent({
 .tj-rank-menu { position: fixed; z-index: 100; min-width: 96px; background: var(--dropdown-bg, var(--body-bg)); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); padding: 3px 0; }
 .tj-rank-item { display: block; width: 100%; background: none; border: none; text-align: left; padding: 3px 10px; font-size: 12px; cursor: pointer;
   &:hover { background: var(--dropdown-hover-bg, var(--accent-btn)); } }
-.tj-workflow { margin-bottom: 8px; }
+.tj-k-next { margin-left: 20px; }
+.tj-steps { gap: 6px; }
+.tj-step { display: inline-flex; align-items: center; gap: 4px; &.current { font-weight: 600; } }
+.tj-step-line { display: inline-block; width: 28px; border-top: 1px solid var(--border); }
+.tj-section { border-top: 1px solid var(--border); padding-top: 8px;
+  h4 { font-size: 13px; font-weight: 600; margin: 0 0 4px; } }
 .tj-artifacts {
-  margin: 4px 0 0; border-collapse: collapse; font-size: 12px;
-  th { text-align: left; font-weight: 500; color: var(--muted); padding: 2px 12px 2px 0; }
-  td { padding: 2px 12px 2px 0; vertical-align: top; }
-  code { font-size: 11px; word-break: break-all; }
+  border-collapse: collapse; font-size: 12px; width: 100%;
+  th { text-align: left; font-weight: 500; color: var(--muted); padding: 3px 14px 3px 0; border-bottom: 1px solid var(--border); }
+  td { padding: 3px 14px 3px 0; vertical-align: middle; border-bottom: 1px dotted var(--border); }
+  code { font-size: 11px; }
 }
+.tj-ellipsis { display: inline-block; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.tj-nowrap { white-space: nowrap; }
+.tj-copy-hash { padding: 0 4px; min-height: 0; line-height: 1; }
 .tj-failure {
   border: 1px solid var(--error); border-left-width: 4px; border-radius: 4px; padding: 8px 12px; margin-bottom: 12px;
   &.waiting { border-color: var(--warning); }
@@ -578,8 +677,9 @@ export default defineComponent({
 .tj-result-checks { list-style: none; margin: 0 0 8px; padding: 0; li { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; } }
 .tj-result-name { font-weight: 500; }
 .tj-result-facts {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 20px; margin: 0;
-  div { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dotted var(--border); }
+  display: grid; grid-template-columns: minmax(140px, max-content) 1fr; margin: 0; max-width: 560px;
+  div { display: contents; }
+  dt, dd { padding: 2px 16px 2px 0; border-bottom: 1px dotted var(--border); }
   dt { color: var(--muted); }
   dd { margin: 0; font-weight: 500; }
 }

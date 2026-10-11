@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { originText, shortUri, workflowOf } from '../workflow';
+import { duration, originText, shortUri, stepsOf, timingOf, workflowOf } from '../workflow';
 
 const evalJob = {
   metadata: {
@@ -55,5 +55,31 @@ describe('shortUri and originText', () => {
     expect(shortUri('hf://Qwen/Qwen2.5-0.5B-Instruct@7ae557604adf67be50417f59c2c2f167def9a775')).toBe('Qwen/Qwen2.5-0.5B-Instruct @ 7ae55760');
     expect(shortUri('hf-dataset://yahma/alpaca-cleaned@12567cabf869/alpaca_data_cleaned.json')).toBe('yahma/alpaca-cleaned @ 12567cab alpaca_data_cleaned.json');
     expect(originText({ kind: 'kubeflow-pipeline', name: 'lora-train-evaluate-publish', run: '', task: '', url: '' })).toBe('Kubeflow pipeline lora-train-evaluate-publish');
+  });
+});
+
+describe('stepsOf, timingOf and duration', () => {
+  const job = (name: string, step: string, phase: string, parents = '', at = name) => ({
+    metadata: {
+      name, creationTimestamp: at, labels: { 'ai-factory.suse.com/step': step }, annotations: { 'ai-factory.suse.com/parents': parents }
+    },
+    status: { phase },
+  });
+  const train = job('t1', 'train', 'Succeeded', '', '1');
+  const evaluate = job('e1', 'eval', 'Succeeded', 't1', '2');
+  const serve = job('s1', 'serve', 'Running', 'e1', '3');
+  const otherTrain = job('t0', 'train', 'Failed', '', '0');
+
+  it('lays out the path through the chain, before and after the run', () => {
+    expect(stepsOf(evaluate, [otherTrain, train, evaluate, serve]).map((s) => [s.step, s.phase, s.current])).toEqual([
+      ['train', 'Succeeded', false], ['eval', 'Succeeded', true], ['serve', 'Running', false]
+    ]);
+    expect(stepsOf(train, [train]).map((s) => s.name)).toEqual(['t1']);
+  });
+
+  it('times the run', () => {
+    expect(timingOf({ status: { startedAt: '2026-10-11T17:37:45Z', completedAt: '2026-10-11T17:39:01Z' } })?.seconds).toBe(76);
+    expect(timingOf({ status: {} })).toBeNull();
+    expect([duration(43), duration(725), duration(7380), duration(null)]).toEqual(['43s', '12m 5s', '2h 3m', '—']);
   });
 });

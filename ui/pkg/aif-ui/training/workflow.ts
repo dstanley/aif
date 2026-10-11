@@ -114,3 +114,89 @@ export function originText(o: RunOrigin): string {
 
   return o.kind || 'submitted by a workflow';
 }
+
+export interface StepItem {
+  name: string; // the run
+  step: string; // its step in the chain
+  phase: string; // its AIJob phase
+  current: boolean;
+}
+
+function parentsOf(aiJob: any): string[] {
+  return String(aiJob?.metadata?.annotations?.[PARENTS_ANNOTATION] || '').split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** The run's path through its chain, for the step strip: the runs it came after (its first parent,
+ * and that one's, back to the start), the run itself, and the runs that came after it (the newest
+ * that names it as a parent, and so on). A run the chain reused appears where it fed the others. */
+export function stepsOf(current: any, chainJobs: any[]): StepItem[] {
+  const name = current?.metadata?.name;
+
+  if (!name) {
+    return [];
+  }
+  const byName = new Map<string, any>((chainJobs || []).map((j: any) => [j.metadata?.name, j]));
+
+  byName.set(name, current);
+  const item = (j: any): StepItem => ({
+    name: j.metadata.name, step: String(j.metadata.labels?.[STEP_LABEL] || ''), phase: String(j.status?.phase || 'Pending'), current: j.metadata.name === name
+  });
+  const before: StepItem[] = [];
+  const seen = new Set([name]);
+  let p = parentsOf(current)[0];
+
+  while (p && byName.has(p) && !seen.has(p)) {
+    seen.add(p);
+    before.unshift(item(byName.get(p)));
+    p = parentsOf(byName.get(p))[0];
+  }
+  const after: StepItem[] = [];
+  let at = name;
+
+  for (;;) {
+    const next = [...byName.values()]
+      .filter((j: any) => !seen.has(j.metadata.name) && parentsOf(j).includes(at))
+      .sort((a: any, b: any) => String(b.metadata.creationTimestamp || '').localeCompare(String(a.metadata.creationTimestamp || '')))[0];
+
+    if (!next) {
+      break;
+    }
+    seen.add(next.metadata.name);
+    after.push(item(next));
+    at = next.metadata.name;
+  }
+
+  return [...before, item(current), ...after];
+}
+
+export interface RunTiming { started: string; completed: string; seconds: number | null }
+
+/** When the run started and finished, and for how long it ran (status.startedAt / completedAt). */
+export function timingOf(aiJob: any): RunTiming | null {
+  const st = aiJob?.status || {};
+  const started = String(st.startedAt || '');
+  const completed = String(st.completedAt || '');
+
+  if (!started && !completed) {
+    return null;
+  }
+  const s = Date.parse(started);
+  const e = Date.parse(completed);
+
+  return { started, completed, seconds: Number.isFinite(s) && Number.isFinite(e) && e >= s ? Math.round((e - s) / 1000) : null };
+}
+
+/** 43s, 12m 5s, 2h 3m */
+export function duration(seconds: number | null): string {
+  if (seconds === null) {
+    return '—';
+  }
+  if (seconds < 60) {
+    return `${ seconds }s`;
+  }
+  if (seconds < 3600) {
+    return `${ Math.floor(seconds / 60) }m${ seconds % 60 ? ` ${ seconds % 60 }s` : '' }`;
+  }
+
+  return `${ Math.floor(seconds / 3600) }h${ Math.floor(seconds % 3600 / 60) ? ` ${ Math.floor(seconds % 3600 / 60) }m` : '' }`;
+}
